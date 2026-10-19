@@ -677,7 +677,7 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
         u64 expected_size =
             (static_cast<u64>(image_info.size.width) * static_cast<u64>(image_info.size.height) *
              static_cast<u64>(image_info.size.depth) * static_cast<u64>(image_info.num_bits) / 8);
-        LOG_ERROR(Render_Vulkan,
+        LOG_WARNING(Render_Vulkan,
                   "Unresolvable image overlap with equal memory address:\n"
                   "=== OLD IMAGE (cached) ===\n"
                   "  Address:        {:#x}\n"
@@ -787,7 +787,14 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
                   merged_image_id.index, static_cast<int>(binding), scheduler.CurrentTick(),
                   scheduler.CurrentTick() - cache_image.tick_accessed_last);
 
-        UNREACHABLE_MSG("Encountered unresolvable image overlap with equal memory address.");
+        // tlg: not fatal. Same address and layout but a different extent (e.g. a 3D texture whose
+        // depth grew: 36x36x819 -> 36x36x1143; `resources` counts only mips and layers). The
+        // guest reused the allocation, so the old image is stale: drop it once it is not in
+        // use and let the caller create a new image of the requested size.
+        if (safe_to_delete) {
+            FreeImage(cache_image_id);
+        }
+        return {merged_image_id, -1, -1};
     }
 
     // Right overlap, the image requested is a possible subresource of the image from cache.
