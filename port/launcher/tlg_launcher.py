@@ -112,6 +112,9 @@ TEXT = {
     'port_by': ('PC port by HayatoG', 'Port para PC por HayatoG'),
     'channel': ('YouTube channel: @hayatog-dev', 'Canal no YouTube: @hayatog-dev'),
     'discord': ('Discord community', 'Comunidade no Discord'),
+    'compatibility': ('Compatibility', 'Compatibilidade'),
+    'readback_linear': ('Linear readbacks', 'Readbacks lineares'),
+    'draw_pipe': ('Multithreaded rendering', 'Renderização multithread'),
 }
 CHANNEL_URL = 'https://www.youtube.com/@hayatog-dev'
 DISCORD_URL = 'https://discord.gg/UMkdMYZh9g'
@@ -302,13 +305,25 @@ class Launcher:
         ttk.Label(video, text=self.t('vram_hint'), foreground='#777', wraplength=360).grid(row=4, column=0, columnspan=2, sticky='w')
         self.build_filters(video, 7)
 
-        log_frame = ttk.LabelFrame(main, text='Log', padding=4)
-        log_frame.grid(row=2, column=2, sticky='nsew', **pad)
+        right = ttk.Frame(main)
+        right.grid(row=2, column=2, sticky='nsew', **pad)
+        right.columnconfigure(0, weight=1)
+        right.rowconfigure(0, weight=1)
+        right.rowconfigure(1, weight=1)
+
+        log_frame = ttk.LabelFrame(right, text='Log', padding=4)
+        log_frame.grid(row=0, column=0, sticky='nsew', pady=(0, 8))
         self.log = tk.Text(log_frame, wrap='none', font=('TkFixedFont', 9), state='disabled', width=60)
         scroll = ttk.Scrollbar(log_frame, command=self.log.yview)
         self.log.configure(yscrollcommand=scroll.set)
         self.log.pack(side='left', fill='both', expand=True)
         scroll.pack(side='right', fill='y')
+
+        compat = ttk.LabelFrame(right, text=self.t('compatibility'), padding=8)
+        compat.grid(row=1, column=0, sticky='nsew')
+        compat.columnconfigure(0, weight=1)
+        self.check(compat, 0, 'readback_linear')
+        self.check(compat, 1, 'draw_pipe')
 
         buttons = ttk.Frame(main)
         buttons.grid(row=3, column=0, columnspan=3, sticky='ew', pady=(10, 0))

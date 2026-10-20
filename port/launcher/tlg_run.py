@@ -56,7 +56,6 @@ def default_language(game_dir=''):
 DEFAULT_ENV = {
     'TLG_PIPELINE_BINARIES': '0',  # VK_KHR_pipeline_binary crashes on the NVIDIA 595 driver
     'TLG_READBACKS': '2',          # the game reads GPU compute results on the CPU (AsyncMap)
-    'TLG_READBACK_LINEAR': '1',    # small/linear render targets back to the CPU: auto exposure (#38, #40)
     'TLG_GC_BUDGET_MB': '5600',    # texture cache budget for 6 GB of VRAM
     'TLG_UPSCALER': 'off',         # native image: GoW3's temporal upscalers made it shake
     'TLG_JITTER': '0',
@@ -82,6 +81,8 @@ DEFAULT_SETTINGS = {
     'mouse_invert_y': False,
     'key_map': {},                 # PS4 button -> 'Key|Mouse Left' (empty: the default)
     'frame_rate': '30',            # 30 | 60 | unlocked (scripts/tlg_patches.py; TLG_FPS wins)
+    'readback_linear': True,
+    'draw_pipe': True,
 }
 FRAME_RATES = ['30', '60', 'unlocked']
 # The frame rate mode prepare() really applied (another eboot build stays at 30).
@@ -144,6 +145,10 @@ def load_settings():
             settings['mouse_invert_y'] = ini['mouse_invert_y'] != '0'
         if 'mouse_sensitivity' in ini:
             settings['mouse_sensitivity'] = min(5.0, max(0.1, float(ini['mouse_sensitivity'])))
+        if 'readback_linear' in ini:
+            settings['readback_linear'] = ini['readback_linear'] != '0'
+        if 'draw_pipe' in ini:
+            settings['draw_pipe'] = ini['draw_pipe'] != '0'
     except ValueError:
         pass
     if 'key_map' in ini:
@@ -421,6 +426,8 @@ def build_env(settings, extra=None):
     # Shaders and pipelines beside the saves (the GPU reads it when it starts; before, Linux used
     # shadPS4's ~/.local/share/shadPS4 and Windows <saves>/user).
     env['TLG_GPU_USER_DIR'] = str(gpu_user_dir())
+    env['TLG_READBACK_LINEAR'] = os.environ.get('TLG_READBACK_LINEAR', '1' if settings.get('readback_linear', True) else '0')
+    env['TLG_DRAW_PIPE'] = os.environ.get('TLG_DRAW_PIPE', '1' if settings.get('draw_pipe', True) else '0')
     if extra:
         env.update(extra)
     return env
@@ -453,6 +460,8 @@ def launch(settings, seconds=0, extra_env=None):
         'mouse_sensitivity': f"{float(settings.get('mouse_sensitivity', 1.0)):.2f}",
         'mouse_invert_y': int(bool(settings.get('mouse_invert_y', False))),
         'key_map': key_map_spec(settings.get('key_map') or {}),
+        'readback_linear': int(bool(settings.get('readback_linear', True))),
+        'draw_pipe': int(bool(settings.get('draw_pipe', True))),
     })
     log = new_log()
     cmd = [str(PROBE), str(OUT_DIR / 'boot-linked.bin'), '--app0', settings['game_dir'],
