@@ -144,8 +144,7 @@ bool TextureCache::ResolveReadbacks(VAddr address, u64 size, bool assume_locks,
         if (diag) readback_sources.Record(source, waited, wait_ns, size);
     };
     TlgFreeze::WaitScope wait{"GPU readback", reinterpret_cast<const void*>(address)}; // tlg
-    if (assume_locks) resolve();
-    else liverpool->SendCommand<true>(resolve);
+    resolve();
     return true;
 }
 
@@ -167,6 +166,8 @@ void TextureCache::ProcessDownloadImages() {
         std::scoped_lock readback_lock{readback_mutex};
         RetireReadbacks();
         std::unique_lock lock{download_images_mutex};
+		boost::container::small_vector<std::pair<VAddr, u64>, 16> newly_watched;
+		bool any_pushed = false;
         for (const ImageId image_id : download_images) {
             const auto& image = slot_images[image_id];
             if (False(image.flags & ImageFlagBits::GpuModified)) continue;
@@ -185,7 +186,6 @@ void TextureCache::ProcessDownloadImages() {
                         std::bit_cast<u8*>(copy->guest_address), copy->staging.mapped, copy->size);
                     runtime.GetStagingPool().FreeDeferred(copy->staging);
                 } else {
-                    WatchReadback<true>(copy->guest_address, copy->size);
                     if (Vulkan::WaitDiagnostics::Enabled()) {
                         // Which images go back to RAM each frame (the report lists the busiest).
                         auto* slot = std::ranges::find(readback_images, image.info.guest_address,
@@ -204,10 +204,19 @@ void TextureCache::ProcessDownloadImages() {
                     has_pending_readbacks.store(true, std::memory_order_release);
                     ++readbacks_queued;
                     readbacks_peak_bytes = std::max(readbacks_peak_bytes, pending_readbacks.Bytes());
+					newly_watched.emplace_back(copy->guest_address, copy->size);
+					any_pushed = true;
                 }
             }
         }
         download_images.clear();
+        if (any_pushed) {
+            scheduler.Flush();
+            for (const auto& [addr, sz] : newly_watched) {
+                WatchReadback<true>(addr, sz);
+            }
+        }
+		
         if (Vulkan::WaitDiagnostics::Enabled()) {
             const auto now = std::chrono::steady_clock::now();
             if (now - readback_report >= std::chrono::seconds(5)) {
