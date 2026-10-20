@@ -47,8 +47,8 @@ class FrameRatePatchTests(unittest.TestCase):
         # #40: a SELF dump of 1.03 has another sha256 than the plain dump, but the same code.
         applied, lines, blob = self.prepare(self_dump(text_with(t.MODES['60'])), '60')
         self.assertEqual(applied, '60')
-        self.assertIn('Frame rate: 60 FPS mode, 4 patch writes', lines)
-        self.assertEqual(struct.unpack_from('<8sQQ', blob), (b'G3PATCH2', 0, 4))
+        self.assertIn('Frame rate: 60 FPS mode, 5 patch writes', lines)
+        self.assertEqual(struct.unpack_from('<8sQQ', blob), (b'G3PATCH2', 0, 5))
 
     def test_self_dump_of_another_build_stays_at_30(self):
         applied, lines, blob = self.prepare(self_dump(text_with(t.MODES['unlocked'], expected=False)), 'unlocked')
@@ -66,9 +66,11 @@ class FrameRatePatchTests(unittest.TestCase):
         self.assertEqual(applied, '30')
         self.assertTrue(any('is not v1.03' in line for line in lines))
 
-    def test_30_writes_an_empty_patch_file(self):
-        applied, lines, blob = self.prepare(b'', '30')
-        self.assertEqual((applied, struct.unpack_from('<8sQQ', blob)), ('30', (b'G3PATCH2', 0, 0)))
+    def test_30_applies_base_patches(self):
+        applied, lines, blob = self.prepare(self_dump(text_with(t.MODES['30'])), '30')
+        self.assertEqual(applied, '30')
+        self.assertIn('Frame rate: 30 FPS mode, 1 patch writes', lines)
+        self.assertEqual(struct.unpack_from('<8sQQ', blob), (b'G3PATCH2', 0, 1))
 
 
 if __name__ == '__main__':
