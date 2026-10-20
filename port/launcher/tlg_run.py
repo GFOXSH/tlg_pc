@@ -81,12 +81,15 @@ DEFAULT_SETTINGS = {
     'mouse_invert_y': False,
     'key_map': {},                 # PS4 button -> 'Key|Mouse Left' (empty: the default)
     'frame_rate': '30',            # 30 | 60 | unlocked (scripts/tlg_patches.py; TLG_FPS wins)
+    'resolution': '1080p',
     'readback_linear': True,
     'draw_pipe': True,
 }
 FRAME_RATES = ['30', '60', 'unlocked']
+RESOLUTIONS = ['360p', '720p', '1080p',  '1440p', '4k']
 # The frame rate mode prepare() really applied (another eboot build stays at 30).
 applied_frame_rate = '30'
+applied_resolution = '1080p'
 
 # Keyboard and mouse defaults of src/runtime_pad.c, in its key_map syntax ('|': several).
 DEFAULT_KEYS = {
@@ -259,7 +262,7 @@ def attach_stdio():
             try:
                 stream = open(msvcrt.open_osfhandle(handle, os.O_WRONLY), 'w', encoding='utf-8',
                               errors='replace', buffering=1)
-            except OSError:
+            except OSError as error:
                 stream = None
         setattr(sys, name, stream or open(os.devnull, 'w'))
 
@@ -286,10 +289,15 @@ def frame_rate(settings):
     return os.environ.get('TLG_FPS') or str(settings.get('frame_rate', '30'))
 
 
+def resolution(settings):
+    """The requested resolution: TLG_RESOLUTION, else the launcher's setting."""
+    return os.environ.get('TLG_RESOLUTION') or str(settings.get('resolution', '1080p'))
+
+
 def prepare(settings, log=print):
     """Builds out/boot-linked.bin, out/content.bin and out/patches.bin (frame rate patches);
     returns the module list that was linked."""
-    global applied_frame_rate
+    global applied_frame_rate, applied_resolution
     game = settings['game_dir']
     scripts = PORT_DIR / 'scripts'
     modules = ['libc.prx', 'libSceFios2.prx']
@@ -300,7 +308,8 @@ def prepare(settings, log=print):
         [*python_command(scripts / 'prepare.py'), game, '--out', str(OUT_DIR)],
         [*python_command(scripts / 'link_modules.py'), game, '--out', str(OUT_DIR), '--modules', *modules],
         [*python_command(scripts / 'content_profile.py'), game, '--out', str(OUT_DIR)],
-        [*python_command(scripts / 'tlg_patches.py'), game, '--out', str(OUT_DIR), '--mode', frame_rate(settings)],
+        [*python_command(scripts / 'tlg_patches.py'), game, '--out', str(OUT_DIR),
+         '--mode', frame_rate(settings), '--resolution', resolution(settings)],
     ]
     for step in steps:
         result = subprocess.run(step, cwd=str(scripts), capture_output=True, text=True,
@@ -312,6 +321,8 @@ def prepare(settings, log=print):
             log(line)
             if line.startswith('Frame rate: ') and line.endswith(' patch writes'):
                 applied_frame_rate = line.split()[2]
+            elif line.startswith('Resolution: ') and 'patch writes' in line:
+                applied_resolution = line.split()[1].rstrip(',')
     isa_table(log)
     return modules
 
@@ -417,6 +428,18 @@ def build_env(settings, extra=None):
     env['TLG_ENGINE_FPS'] = {'30': '30', '60': '60'}.get(applied_frame_rate, '240')
     if applied_frame_rate == 'unlocked':
         env.setdefault('TLG_VBLANK_HZ', '0')
+    
+    # Internal resolution settings for Vulkan backend
+    res_map = {
+        '360p': (640, 360), '720p': (1280, 720), '1080p': (1920, 1080),
+        '1440p': (2560, 1440), '4k': (3840, 2160),
+    }
+    cur_res = resolution(settings).lower()
+    if cur_res in res_map:
+        rw, rh = res_map[cur_res]
+        env.setdefault('TLG_INTERNAL_WIDTH', str(rw))
+        env.setdefault('TLG_INTERNAL_HEIGHT', str(rh))
+
     restart = f'"{sys.executable}" --play' if FROZEN else f'"{sys.executable}" "{Path(__file__).resolve()}"'
     env.setdefault('TLG_RESTART_COMMAND', restart)
     # Linux package: the libraries built with the port (SDL3, FFmpeg, ...) are in out/lib.
@@ -496,7 +519,7 @@ def main(argv=None):
             print(f'{"Compile primeiro" if kind == "not_built" else "Faltando"}: {detail}', file=sys.stderr)
         return 1
     notes = []
-    prepare(settings, log=lambda line: notes.append(line) if line.startswith('Frame rate') else None)
+    prepare(settings, log=lambda line: notes.append(line) if line.startswith(('Frame rate', 'Resolution')) else None)
     process, log = launch(settings, seconds)
     print(f'Rodando (log: {log})', flush=True)
     with open(log, 'w', encoding='utf-8') as out:

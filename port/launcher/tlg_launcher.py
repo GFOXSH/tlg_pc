@@ -40,8 +40,12 @@ TEXT = {
     'fps_30': ('30 FPS (as on PS4)', '30 FPS (como no PS4)'),
     'fps_60': ('60 FPS', '60 FPS'),
     'fps_unlocked': ('Unlocked (up to the display)', 'Livre (até a taxa do monitor)'),
-    'fps_hint': ('60/unlocked patch eboot 1.03 in memory; see docs/60fps.md',
-                 '60/livre alteram o eboot 1.03 na memória; ver docs/60fps.md'),
+    'resolution': ('Render resolution', 'Resolução de renderização'),
+    'res_360p': ('360p', '360p'),
+    'res_720p': ('720p', '720p'),
+    'res_1080p': ('1080p (as on PS4)', '1080p (como no PS4)'),
+    'res_1440p': ('1440p (2K)', '1440p (2K)'),
+    'res_4k': ('4K (2160p)', '4K (2160p)'),
     'show_fps': ('Show FPS overlay at start (F10 toggles)', 'Mostrar overlay de FPS ao iniciar (F10 alterna)'),
     'vram': ('Texture cache budget (MB of VRAM)', 'Orçamento do cache de texturas (MB de VRAM)'),
     'vram_hint': ('6 GB card: 5600 · 8 GB: 7000 · 12 GB: 10500 · 16 GB: 14000 · 24 GB: 21500. This is video card memory (VRAM), not RAM; never above your card\'s VRAM.',
@@ -58,6 +62,9 @@ TEXT = {
     'color_contrast': ('Contrast (1 = unchanged)', 'Contraste (1 = sem alteração)'),
     'color_saturation': ('Saturation (1 = unchanged)', 'Saturação (1 = sem alteração)'),
     'color_gamma': ('Gamma (1 = unchanged)', 'Gama (1 = sem alteração)'),
+    'compatibility': ('Compatibility', 'Compatibilidade'),
+    'readback_linear': ('Linear readbacks', 'Readbacks lineares'),
+    'draw_pipe': ('Multithreaded rendering', 'Renderização multithread'),
     'audio': ('Audio', 'Áudio'),
     'native_audio': ('Native audio (libSceNgs2.sprx from your console)', 'Áudio nativo (libSceNgs2.sprx do seu console)'),
     'controls': ('Controls', 'Controles'),
@@ -112,9 +119,6 @@ TEXT = {
     'port_by': ('PC port by HayatoG', 'Port para PC por HayatoG'),
     'channel': ('YouTube channel: @hayatog-dev', 'Canal no YouTube: @hayatog-dev'),
     'discord': ('Discord community', 'Comunidade no Discord'),
-    'compatibility': ('Compatibility', 'Compatibilidade'),
-    'readback_linear': ('Linear readbacks', 'Readbacks lineares'),
-    'draw_pipe': ('Multithreaded rendering', 'Renderização multithread'),
 }
 CHANNEL_URL = 'https://www.youtube.com/@hayatog-dev'
 DISCORD_URL = 'https://discord.gg/UMkdMYZh9g'
@@ -293,8 +297,7 @@ class Launcher:
         self.check(video, 1, 'vsync')
         self.check(video, 2, 'show_fps')
         self.combo(video, 5, 'frame_rate', tlg_run.FRAME_RATES, lambda k: self.t(f'fps_{k}'))
-        ttk.Label(video, text=self.t('fps_hint'), foreground='#777', wraplength=320).grid(
-            row=6, column=0, columnspan=2, sticky='w')
+        self.combo(video, 6, 'resolution', tlg_run.RESOLUTIONS, lambda k: self.t(f'res_{k}'))
         ttk.Label(video, text=self.t('vram'), wraplength=220).grid(row=3, column=0, sticky='w', pady=(6, 0))
         vram = tk.IntVar(value=int(self.settings['vram_budget_mb']))
         self.vars['vram_budget_mb'] = vram
@@ -373,7 +376,7 @@ class Launcher:
             self.ini_vars[key] = var
             ttk.Checkbutton(parent, text=self.t(key), variable=var, command=self.filters_changed).grid(
                 row=row + offset, column=0, columnspan=2, sticky='w', pady=2)
-        ttk.Label(parent, text=self.t('sharpening')).grid(row=row + 3, column=0, sticky='w')
+        ttk.Label(parent, text=self.sharpening_label()).grid(row=row + 3, column=0, sticky='w') if hasattr(self, 'sharpening_label') else ttk.Label(parent, text=self.t('sharpening')).grid(row=row + 3, column=0, sticky='w')
         self.sharpener = ttk.Combobox(parent, values=[self.t('sharpen_' + k) for k in SHARPENERS],
                                       state='readonly', width=16)
         self.sharpener.current(2 if ini['cas'] not in ('0', '') else 1 if ini['rcas'] not in ('0', '') else 0)
@@ -625,6 +628,7 @@ class Launcher:
         self.lines.put(f"{self.t('running')} {log}")
         with open(log, 'w', encoding='utf-8') as out:
             out.write(f'Frame rate: requested {tlg_run.frame_rate(self.settings)}, applied {tlg_run.applied_frame_rate}\n')
+            out.write(f'Resolution: requested {tlg_run.resolution(self.settings)}, applied {tlg_run.applied_resolution}\n')
             for line in self.process.stdout:
                 out.write(line)
                 out.flush()
