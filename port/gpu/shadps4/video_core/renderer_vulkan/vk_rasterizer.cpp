@@ -388,9 +388,8 @@ bool Rasterizer::DrawPipeWanted() {
     if (env && env[0]) {
         return env[0] == '1';
     }
-    // Stage B spins while draws flow. Measured ahead with 16 threads (+19%) and with 4 cores /
-    // 8 threads (taskset, Steam Deck-like: +18%).
-    return TlgThreads::Available() >= 8;
+	
+    return false;
 }
 
 bool Rasterizer::UseDrawPipe() const {
