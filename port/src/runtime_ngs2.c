@@ -776,7 +776,7 @@ static void reverb_run(Reverb *r, uint32_t rate, float data[MAX_CH][MAX_GRAIN], 
         uint32_t j = 0;
         for (int k = 0; k < REVERB_COMBS; ++k) {
             if (!(comb_mask[c] >> k & 1)) continue;
-            float g = (j & 1) ? 1.0f : 1.0f / ((float)j * 0.5f * 20.0f + 40.0f) * (r->diffusion - 100.0f) + 1.0f;
+            float g = ((j & 1) ? 1.0f : 1.0f / ((float)j * 0.5f * 20.0f + 40.0f) * (r->diffusion - 100.0f) + 1.0f) * 0.125f;
             const float *o = combs + (size_t)k * MAX_GRAIN;
             for (uint32_t i = 0; i < n; ++i) rev[i] += o[i] * g;
             ++j;
