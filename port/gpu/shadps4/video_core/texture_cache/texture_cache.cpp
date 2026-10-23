@@ -1056,6 +1056,7 @@ ImageView& TextureCache::FindTexture(ImageId image_id, const ImageDesc& desc, Vi
     }
     if (memo && !TlgToggle::Disabled(TlgToggle::TextureViewMemo)) {
         if (memo->image_id == image_id && memo->image_uid == image.image_uid &&
+            memo->view_info == desc.view_info &&
             memo->backing == image.backing && memo->view_id) {
             // tlg: the memo is keyed by slot index and backing pointer, both of which get reused
             // when an image is evicted and a new one lands in the same slot (the GC evicts ~1000
@@ -1072,8 +1073,17 @@ ImageView& TextureCache::FindTexture(ImageId image_id, const ImageDesc& desc, Vi
         memo->image_id = image_id;
         memo->image_uid = image.image_uid;
         memo->backing = image.backing;
-        memo->view_id = last < ids.size() && &slot_image_views[ids[last]] == &view ? ids[last]
-                                                                                    : ids.back();
+        memo->view_info = desc.view_info;
+
+        if (last < ids.size() && &slot_image_views[ids[last]] == &view) {
+            memo->view_id = ids[last];
+        } else {
+            const auto it = std::ranges::find_if(ids, [&](ImageViewId id) {
+                return &slot_image_views[id] == &view;
+            });
+            memo->view_id = (it != ids.end()) ? *it : (ids.empty() ? ImageViewId{} : ids.back());
+        }
+
         return view;
     }
     return image.FindView(desc.view_info);

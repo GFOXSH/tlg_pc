@@ -138,6 +138,7 @@ public:
         const void* backing = nullptr;
         ImageViewId view_id{};
         u64 image_uid = 0; ///< slot indices and backing addresses get reused after eviction
+		ImageViewInfo view_info{};
     };
 
     /// Retrieves an image view with the properties of the specified image id.
