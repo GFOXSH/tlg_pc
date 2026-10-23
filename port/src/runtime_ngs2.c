@@ -31,7 +31,6 @@
  *   TLG_NGS2_LOG=1           unknown parameters, decoder errors, a summary every 30 s
  *   TLG_NGS2_WAV=<file>      writes render buffer 0 as float WAV (compare with the native mix)
  *   TLG_NGS2_USERFX=0        do not call the game's user FX handlers
- *   TLG_NGS2_SDK=<hex>       SDK version of the game (06000000 or later: reverb wet/dry up to 32.0; default 1.0)
  *   TLG_NGS2_REVERB=pass     reverb racks pass their input through unprocessed (debug)
  *   TLG_NGS2_CUSTOM=mute     custom racks (chorus/delay) output silence (debug)
  *   TLG_NGS2_DELAY_TYPE=0    custom delay on a mono downmix instead of per channel (the default)
@@ -147,6 +146,11 @@ typedef struct {
 /* I3DL2 reverb (0x20010001): early reflections from a pattern of taps, 16 damped combs mixed
  * per output channel and decorrelated by 4 allpasses, room HF low-pass, wet/dry. */
 #define REVERB_COMBS 16
+/* sub_296E0 weights the combs with dword_3A740 = 1.0 and nothing else scales them (rodata checked). Earlier
+ * versions of this file used 0.125 here; set it back to 0.125f if the reverb turns out too loud. */
+#define REVERB_COMB_MIX_SCALE 0.125f
+/* wet/dry upper bound: dword_37980 = 1.0 for SDK < 0x6000000, dword_379AC = 32.0 for newer SDKs */
+#define REVERB_WETDRY_MAX 1.0f
 #define REVERB_ALLPASS 4
 typedef struct {
     float *line; uint32_t length, index;
@@ -169,6 +173,12 @@ typedef struct {
     float density_prev;                         /* comb delay lines are wiped when density changes */
     int primed;                                 /* at least one block has run: parameter changes crossfade from here on */
     /* mono, ER, late input, ER (old taps), late input (old taps), 16 comb outputs: (5 + 16) * MAX_GRAIN */
+    /* Explicit parameters (0x20010002): taps, combs and allpasses given directly instead of the I3DL2 model. */
+    int half;                   /* half-rate mode: combs and allpasses run at rate / 2 (console: v19[4] == 1) */
+    float dec[8], up[MAX_CH][4]; /* decimator state and per-channel interpolator state */
+    int custom;
+    uint32_t c_tap_mask, c_comb_mask, c_ap_mask;
+    float c_tap_ms[5], c_tap_gain[5], c_comb_ms[REVERB_COMBS], c_comb_gain, c_comb_damp, c_ap_ms[REVERB_ALLPASS], c_ap_coef;
     float *work;
 } Reverb;
 
@@ -625,18 +635,74 @@ static const float er_time[8][3] = {{11, 23, 35}, {14.75f, 26.55f, 38.03f}, {6, 
                                     {11, 17, 30}, {16, 30, 55}, {20, 29, 40}, {37, 47, 62}};
 static const float er_gain[8][3] = {{0.4f, 0.134f, 0.1f}, {0.4f, 0.3f, 0.1f}, {0.45f, -0.6f, 0.2f}, {0.55f, -0.6f, 0.2f},
                                     {-0.45f, 0.6f, 0.3f}, {0.7f, 0.7f, 0.4f}, {0.7f, -0.4f, 0.3f}, {0.7f, -0.4f, 0.4f}};
-static const float comb_ms[REVERB_COMBS] = {22.01f, 23.25f, 24.75f, 26.6f, 28.25f, 29.63f, 31.06f, 32.44f,
-                                            33.69f, 34.95f, 36.29f, 37.65f, 38.99f, 40.35f, 41.67f, 43.05f};
+/* Three size modes (console: tables 0x3A750 / 0x3A790 / 0x3A7D0 and ER line lengths 0x3A520 = 2400 / 4800 / 14400 at 48 kHz).
+ * The console picks the mode through sub_282C0 (an out-of-range value falls back to 1); how the rack option maps to it is
+ * not known, so REVERB_SIZE_MODE selects it. 1 was the only table used before. */
+#define REVERB_SIZE_MODE 1
+static const float comb_ms_modes[3][REVERB_COMBS] = {
+    {22.01f, 22.134f, 22.284f, 22.469f, 22.634f, 22.772f, 22.915f, 23.053f, 23.178f, 23.304f, 23.438f, 23.574f, 23.708f, 23.844f, 23.976f, 24.114f},
+    {22.01f, 23.25f, 24.75f, 26.6f, 28.25f, 29.63f, 31.06f, 32.44f, 33.69f, 34.95f, 36.29f, 37.65f, 38.99f, 40.35f, 41.67f, 43.05f},
+    {32.44f, 33.69f, 34.95f, 36.29f, 37.65f, 38.99f, 40.35f, 41.67f, 43.05f, 44.59f, 46.12f, 47.89f, 49.41f, 51.04f, 52.77f, 54.05f}};
+static const uint32_t er_samples_48k[3] = {2400, 4800, 14400};
+#define comb_ms comb_ms_modes[REVERB_SIZE_MODE]
 static const float allpass_ms[REVERB_ALLPASS] = {11.58f, 9.19f, 7.1f, 4.69f};
 static const int allpass_offset[MAX_CH][REVERB_ALLPASS] = {{0, -32, -6, -11}, {-10, -5, 0, -34}, {-8, -3, -33, -5}, {-7, -9, -5, -8},
                                                           {-33, -8, -8, 0}, {-11, -21, -10, -7}, {-9, -10, -27, -3}, {-6, -11, -9, -24}};
 static const uint16_t comb_mask[MAX_CH] = {0xaaaa, 0x5555, 0xcccc, 0x3333, 0x0ff0, 0x9ab2, 0x3c3c, 0x399c};
 
+/* Half-rate mode (console: v19[4] == 1; sub_297C0, sub_297E0, sub_29980, sub_29990). Which rack option turns it on is not known:
+ * REVERB_HALF_RATE_DEFAULT is the initial value and reverb_set_half switches it later. */
+#define REVERB_HALF_RATE_DEFAULT 0
+/* Decimator by 2: two cascaded recursive filters written as 4-sample blocks (tables 0x3A810..0x3A8E0), a straight port of
+ * the vector code of sub_297E0. s = 8 floats of state; n must be a multiple of 4; writes n / 2 samples. */
+static void dec_run(float s[8], const float *x, float *out, uint32_t n) {
+    static const float C810[4] = {0, 0, 0, 0.347272992f}, C820[4] = {0, 0, 0.347272992f, 0.453348994f},
+        C830[4] = {0, 0.347272992f, 0.453348994f, 0.138476998f}, C840[4] = {0.347272992f, 0.453348994f, 0.138476998f, 0.0422980003f},
+        C850[4] = {0.347272992f, 0.106076002f, 0.0324009992f, 0.00989700016f}, C860[4] = {0.305453002f, 0.0933019966f, 0.0284989998f, 0.00870500039f},
+        C870[4] = {0, 0, 0, 0.155947998f}, C880[4] = {0, 0, 0.155947998f, 0.435092002f},
+        C890[4] = {0, 0.155947998f, 0.435092002f, 0.435133010f}, C8A0[4] = {0, 0.435092002f, 0.435133010f, 0.163717002f},
+        C8B0[4] = {0, 0.402337998f, 0.188784003f, -0.0173400007f}, C8C0[4] = {0, 0.123195000f, 0.0327950008f, -0.0250669997f},
+        C8D0[4] = {0, 0.210291997f, -0.160740003f, -0.213992000f}, C8E0[4] = {0, -0.326864988f, -0.0870120004f, 0.0665090010f};
+    for (uint32_t i = 0; i + 4 <= n; i += 4) {
+        float x0 = x[i], x1 = x[i + 1], x2 = x[i + 2], x3 = x[i + 3], v1[4], v2[4];
+        for (int l = 0; l < 4; ++l)
+            v1[l] = ((x3 * C810[l] + x2 * C820[l]) + (x1 * C830[l] + x0 * C840[l])) + (s[4] * C860[l] + s[0] * C850[l]);
+        for (int l = 0; l < 4; ++l)
+            v2[l] = ((v1[3] * C870[l] + v1[2] * C880[l]) + (v1[1] * C890[l] + v1[0] * C8A0[l]))
+                  + ((s[6] * C8D0[l] + s[7] * C8E0[l]) + (s[2] * C8B0[l] + s[3] * C8C0[l]));
+        s[0] = x3; s[1] = x2; s[2] = v1[3]; s[3] = v1[2]; s[4] = v1[3]; s[5] = v1[2]; s[6] = v2[3]; s[7] = v2[2];
+        out[i >> 1] = v2[1]; out[(i >> 1) + 1] = v2[3];
+    }
+}
+/* Interpolator by 2 (sub_29990): hb holds 4 samples of history followed by n input samples (n a multiple of 4);
+ * writes 2 * n samples and keeps the last 4 input samples in `state`. */
+static void up_run(float state[4], float *hb, float *out, uint32_t n) {
+    memcpy(hb, state, 4 * sizeof(float));
+    for (uint32_t i = 0; i < n; ++i) {
+        const float *p = hb + i;
+        out[2 * i] = (0.530330062f * p[1] - 0.0303300861f * p[0]) + (0.530330062f * p[2] - 0.0303300861f * p[3]);
+        out[2 * i + 1] = p[2];
+    }
+    memcpy(state, hb + n, 4 * sizeof(float));
+}
+static void reverb_set_half(Reverb *r, uint32_t rate, int on) {
+    r->half = on != 0;
+    uint32_t crate = r->half ? rate / 2 : rate;
+    memset(r->dec, 0, sizeof(r->dec)); memset(r->up, 0, sizeof(r->up));
+    for (int c = 0; c < MAX_CH; ++c)
+        for (int i = 0; i < REVERB_ALLPASS; ++i) {
+            int len = (int)((float)crate * allpass_ms[i] * 0.001f + 0.5f) + allpass_offset[c][i];
+            r->ap[c][i].length = len > 1 ? (uint32_t)len : 1;
+            r->ap[c][i].index = 0;
+        }
+    r->dirty = 1;
+}
+
 static Reverb *reverb_new(uint32_t rate) {
     Reverb *r = calloc(1, sizeof(*r));
     if (!r) return NULL;
-    r->er_length = rate / 10;
-    size_t floats = r->er_length + (5 + REVERB_COMBS) * MAX_GRAIN;
+    r->er_length = (uint32_t)((uint64_t)er_samples_48k[REVERB_SIZE_MODE] * rate / 48000);
+    size_t floats = r->er_length + (7 + REVERB_COMBS) * MAX_GRAIN;
     uint32_t comb_max = (uint32_t)((float)rate * 43.05f / 1000.0f) + 8;
     floats += (size_t)comb_max * REVERB_COMBS;
     uint32_t ap_len[REVERB_ALLPASS];
@@ -644,7 +710,7 @@ static Reverb *reverb_new(uint32_t rate) {
     float *mem = calloc(floats, sizeof(float));
     if (!mem) { free(r); return NULL; }
     r->er_line = mem; mem += r->er_length;
-    r->work = mem; mem += (5 + REVERB_COMBS) * MAX_GRAIN;
+    r->work = mem; mem += (7 + REVERB_COMBS) * MAX_GRAIN;
     for (int k = 0; k < REVERB_COMBS; ++k) { r->comb[k].line = mem; r->comb[k].length = comb_max; mem += comb_max; }
     for (int c = 0; c < MAX_CH; ++c)
         for (int i = 0; i < REVERB_ALLPASS; ++i) {
@@ -657,12 +723,50 @@ static Reverb *reverb_new(uint32_t rate) {
     r->diffusion = 100.0f; r->density = 100.0f; r->hf_reference = 5000.0f;
     r->density_prev = -1.0f;
     r->dirty = 1;
+    reverb_set_half(r, rate, REVERB_HALF_RATE_DEFAULT);
     return r;
 }
 static void reverb_free(Reverb *r) { if (r) { free(r->er_line); free(r); } }
 
+/* Explicit design (console: sub_28440, sub_292D0, sub_27A80, sub_27EA0, sub_27720). Times are in ms. Lengths are rounded up
+ * (taps to a multiple of 8, combs and allpasses to a multiple of 4) and cut to the memory allocated here. */
+static void reverb_design_custom(Reverb *r, uint32_t rate) {
+    const float ms = (float)(r->half ? rate / 2 : rate) * 0.001f;
+    const uint32_t len = r->er_length, comb_cap = (uint32_t)((float)rate * 43.05f / 1000.0f) + 8;
+    for (int i = 0; i < 5; ++i) {
+        uint32_t d = ((uint32_t)(r->c_tap_ms[i] * ms + 0.5f) + 7) & ~7u;
+        r->tap_delay[i] = d > len ? len : d;
+        r->tap_gain[i] = (r->c_tap_mask >> i & 1) ? r->c_tap_gain[i] : 0.0f;
+    }
+    r->er_gain = r->late_gain = 1.0f;   /* 0xE5C / 0xE60 keep their initial 1.0 in this mode */
+    r->density = 0.0f;                  /* the comb mix reads P[0x3C], which holds the tap mask here (a denormal) */
+    r->hf_k = 0.0f;
+    for (int k = 0; k < REVERB_COMBS; ++k) {
+        Comb *cb = &r->comb[k];
+        uint32_t l = ((uint32_t)(r->c_comb_ms[k] * ms + 0.5f) + 3) & ~3u;
+        if (l < 1) l = 1;
+        if (l > comb_cap) l = comb_cap;
+        if (l != cb->length) { cb->length = l; if (cb->index >= l) cb->index = 0; }
+        cb->gain = (r->c_comb_mask >> k & 1) ? r->c_comb_gain : 0.0f;
+        cb->damp_a = 1.0f - r->c_comb_damp; cb->damp_b = r->c_comb_damp;
+        cb->shelf_a = 0.0f; cb->shelf_b = 1.0f;
+        cb->fir_a = 1.0f; cb->fir_b = 0.0f;   /* no input filter in this mode */
+    }
+    r->ap_coef = r->c_ap_coef;
+    for (int c = 0; c < MAX_CH; ++c)
+        for (int a = 0; a < REVERB_ALLPASS; ++a) {
+            uint32_t cap = (uint32_t)((float)rate * allpass_ms[a] * 0.001f + 0.5f);
+            int32_t l = (int32_t)(((uint32_t)(r->c_ap_ms[a] * ms + 0.5f) + 3) & ~3u) + allpass_offset[c][a];
+            if (l < 1) l = 1;
+            if ((uint32_t)l > cap) l = (int32_t)cap;
+            Allpass *ap = &r->ap[c][a];
+            if ((uint32_t)l != ap->length) { ap->length = (uint32_t)l; if (ap->index >= ap->length) ap->index = 0; }
+        }
+}
+
 static void reverb_design(Reverb *r, uint32_t rate) {
     r->dirty = 0;
+    if (r->custom) { reverb_design_custom(r, rate); return; }
     /* Early reflections: tap 0 at reflectionsDelay, three pattern taps, tap 4 feeds the combs. */
     uint32_t p = r->pattern % 8, len = r->er_length;
     uint32_t first = (uint32_t)(r->reflections_delay * (float)rate + 0.5f);
@@ -688,23 +792,26 @@ static void reverb_design(Reverb *r, uint32_t rate) {
     r->ap_coef = r->diffusion * 0.005f;
     /* Combs: length from the table scaled by density (odd), feedback for decayTime, HF damping. */
     float ratio = r->decay_hf_ratio;
+    const uint32_t crate = r->half ? rate / 2 : rate;   /* combs run at the reduced rate in half-rate mode */
+    const float *cms = comb_ms_modes[r->half ? 2 : REVERB_SIZE_MODE];
     int wipe = r->density != r->density_prev;   /* console: lines are cleared when the density value changes */
     r->density_prev = r->density;
     for (int k = 0; k < REVERB_COMBS; ++k) {
         Comb *cb = &r->comb[k];
-        uint32_t l = (uint32_t)((float)rate * comb_ms[k] / (r->density * -3.0f / 100.0f + 4.0f) * 0.001f + 0.5f);
+        uint32_t l = (uint32_t)((float)crate * cms[k] / (r->density * -3.0f / 100.0f + 4.0f) * 0.001f + 0.5f);
         l += ~l & 1;
         uint32_t max = (uint32_t)((float)rate * 43.05f / 1000.0f) + 8;
         if (l > max) l = max;
         if (l != cb->length) { cb->length = l; if (cb->index >= l) cb->index = 0; }
         if (wipe) memset(cb->line, 0, (size_t)l * sizeof(float));
-        float g = powf(10.0f, (float)l / (float)rate / r->decay_time * -3.0f);
+        float g = powf(10.0f, (float)l / (float)crate / r->decay_time * -3.0f);
         cb->gain = g;
         if (ratio > 1.0f) {
             float f = powf(10.0f, (ratio - 1.0f) * log10f(g));
             cb->damp_a = 0.0506f; cb->damp_b = 0.9494f; cb->shelf_a = 1.0f; cb->shelf_b = 1.0f - f;
         } else {
-            float f = ratio < 0.8f ? (0.8f - ratio) * -0.8571429f + 0.8f : ratio;
+            float f = r->half ? (ratio > 0.5f ? ratio : (0.8f - 2.0f * ratio) * -0.8571429f + 0.8f)
+                              : (ratio < 0.8f ? (0.8f - ratio) * -0.8571429f + 0.8f : ratio);
             f *= f;
             float damp = fminf(0.99978f, log10f(g) * 2.3025851f * 0.25f * (1.0f - 1.0f / f));
             cb->damp_a = 1.0f - damp; cb->damp_b = damp; cb->shelf_a = 0.0f; cb->shelf_b = 1.0f;
@@ -721,25 +828,35 @@ static void reverb_design(Reverb *r, uint32_t rate) {
         r->hf_k = ((1.0f - g * cs) - a) / (1.0f - g);
     }
 }
-/* SDK version the game was built with (the firmware reads it from its module header). From SDK 6.0 on the
- * reverb accepts wet/dry up to 32.0 instead of 1.0. TLG_NGS2_SDK=<hex> (e.g. 06008001) overrides; the default
- * keeps the old limit. */
-static uint32_t sdk_version(void) {
-    static long value = -1;
-    if (value < 0) { const char *e = env("NGS2_SDK"); value = e && *e ? (long)strtoul(e, NULL, 16) : 0x04500000L; }
-    return (uint32_t)value;
+/* 0x20010002 (188 bytes): wet/dry, 5 taps (delay ms at 0x10, gain at 0x24, mask at 0x38), 16 combs (ms at 0x3C, mask at 0x7C,
+ * gain at 0x80, damping at 0x84), 4 allpasses (mask at 0x88, ms at 0x8C, coefficient at 0x9C). */
+static void reverb_set_custom(Reverb *r, const ParamHeader *p, float (*f)(const ParamHeader *, uint32_t), uint32_t (*u)(const ParamHeader *, uint32_t)) {
+    r->wet = clampf(f(p, 8), 0.0f, REVERB_WETDRY_MAX);
+    r->dry = clampf(f(p, 12), 0.0f, REVERB_WETDRY_MAX);
+    r->c_tap_mask = u(p, 0x38); r->c_comb_mask = u(p, 0x7C); r->c_ap_mask = u(p, 0x88);
+    for (int i = 0; i < 5; ++i) {
+        r->c_tap_ms[i] = fmaxf(0.0f, f(p, 0x10 + 4 * i));
+        r->c_tap_gain[i] = clampf(f(p, 0x24 + 4 * i), 0.0f, 1.0f);
+    }
+    for (int k = 0; k < REVERB_COMBS; ++k) r->c_comb_ms[k] = fmaxf(0.0f, f(p, 0x3C + 4 * k));
+    r->c_comb_gain = clampf(f(p, 0x80), 0.0f, 1.0f);
+    r->c_comb_damp = clampf(f(p, 0x84), 0.0f, 1.0f);
+    for (int a = 0; a < REVERB_ALLPASS; ++a) r->c_ap_ms[a] = fmaxf(0.0f, f(p, 0x8C + 4 * a));
+    r->c_ap_coef = clampf(f(p, 0x9C), 0.0f, 1.0f);
+    r->custom = 1;
+    r->dirty = 1;
 }
 static void reverb_set_i3dl2(Reverb *r, const ParamHeader *p, float (*f)(const ParamHeader *, uint32_t), uint32_t (*u)(const ParamHeader *, uint32_t)) {
-    const float wd_max = sdk_version() >= 0x06000000u ? 32.0f : 1.0f;
-    r->wet = clampf(f(p, 8), 0.0f, wd_max);
-    r->dry = clampf(f(p, 12), 0.0f, wd_max);
+    r->custom = 0;
+    r->wet = clampf(f(p, 8), 0.0f, REVERB_WETDRY_MAX);
+    r->dry = clampf(f(p, 12), 0.0f, REVERB_WETDRY_MAX);
     int32_t room = (int32_t)u(p, 16), room_hf = (int32_t)u(p, 20), refl = (int32_t)u(p, 36), rev = (int32_t)u(p, 44);
     r->room = fminf(1.0f, mb_to_gain((float)room));
-    r->room_hf = mb_to_gain((float)(room_hf > 0 ? 0 : room_hf));   /* below -10000 mb_to_gain gives 0, as the console does */
+    r->room_hf = mb_to_gain((float)(room_hf > 0 ? 0 : room_hf < -10000 ? -10000 : room_hf));
     r->pattern = u(p, 24) < 16 ? u(p, 24) : 0;
     r->decay_time = clampf(f(p, 28), 0.1f, 20.0f);
     r->decay_hf_ratio = clampf(f(p, 32), 0.01f, 2.0f);
-    r->reflections = mb_to_gain((float)(refl > 1000 ? 1000 : refl));
+    r->reflections = mb_to_gain((float)(refl > 1000 ? 1000 : refl < -10000 ? -10000 : refl));
     r->reflections_delay = clampf(f(p, 40), 0.0f, 0.3f);
     r->reverb = mb_to_gain((float)((rev > 2000 ? 2000 : rev < -10000 ? -10000 : rev) - 2400));
     r->reverb_delay = clampf(f(p, 48), 0.0f, 0.1f);
@@ -778,6 +895,7 @@ static void reverb_run(Reverb *r, uint32_t rate, float data[MAX_CH][MAX_GRAIN], 
     float *mono = r->work, *er = mono + MAX_GRAIN, *late_in = er + MAX_GRAIN, *er_old = late_in + MAX_GRAIN,
           *late_old = er_old + MAX_GRAIN, *combs = late_old + MAX_GRAIN;
     /* Mono downmix without the LFE. */
+    /* console constants dword_37B48 / 37B40 / 37B44 */
     float dg = in_channels >= 8 ? 0.267f : in_channels >= 6 ? 0.316f : in_channels >= 2 ? 0.707f : 1.0f;
     memset(mono, 0, n * sizeof(float));
     for (uint32_t c = 0; c < in_channels; ++c) {
@@ -802,13 +920,17 @@ static void reverb_run(Reverb *r, uint32_t rate, float data[MAX_CH][MAX_GRAIN], 
             late_in[i] = late_in[i] * t + late_old[i] * u;
         }
     }
+    const uint32_t m = r->half ? n >> 1 : n;
+    const float *src = late_in;
+    float *half_in = combs + (size_t)REVERB_COMBS * MAX_GRAIN, *up_buf = half_in + MAX_GRAIN;
+    if (r->half) { memset(half_in, 0, m * sizeof(float)); dec_run(r->dec, late_in, half_in, n); src = half_in; }
     /* Combs. */
     for (int k = 0; k < REVERB_COMBS; ++k) {
         Comb *cb = &r->comb[k];
         float *out = combs + (size_t)k * MAX_GRAIN;
-        for (uint32_t i = 0; i < n; ++i) {
-            float x = cb->fir_a * late_in[i] + cb->fir_b * cb->x1;
-            cb->x1 = late_in[i];
+        for (uint32_t i = 0; i < m; ++i) {
+            float x = cb->fir_a * src[i] + cb->fir_b * cb->x1;
+            cb->x1 = src[i];
             float d = cb->line[cb->index];
             cb->lp_state = d * cb->damp_a + cb->lp_state * cb->damp_b;
             float y = (d * cb->shelf_a + cb->lp_state * cb->shelf_b) * cb->gain;
@@ -837,23 +959,26 @@ static void reverb_run(Reverb *r, uint32_t rate, float data[MAX_CH][MAX_GRAIN], 
         for (int k = 0; k < REVERB_COMBS; ++k) {
             if (!(comb_mask[c] >> k & 1)) continue;
             /* Even-numbered combs of the mix are weighted by the density parameter (console: sub_296E0). */
-            float g = ((j & 1) ? 1.0f : 1.0f / ((float)j * 0.5f * 20.0f + 40.0f) * (r->density - 100.0f) + 1.0f) * 0.125f;
+            float g = ((j & 1) ? 1.0f : 1.0f / ((float)j * 0.5f * 20.0f + 40.0f) * (r->density - 100.0f) + 1.0f) * REVERB_COMB_MIX_SCALE;
             const float *o = combs + (size_t)k * MAX_GRAIN;
-            for (uint32_t i = 0; i < n; ++i) rev[i] += o[i] * g;
+            for (uint32_t i = 0; i < m; ++i) rev[i] += o[i] * g;
             ++j;
         }
         for (int a = 0; a < REVERB_ALLPASS; ++a) {
+            if (r->custom && !(r->c_ap_mask >> a & 1)) continue;
             Allpass *ap = &r->ap[c][a];
-            for (uint32_t i = 0; i < n; ++i) {
+            for (uint32_t i = 0; i < m; ++i) {
                 float d = ap->line[ap->index], w = rev[i] + r->ap_coef * d;
                 ap->line[ap->index] = w;
                 rev[i] = d - r->ap_coef * w;
                 if (++ap->index >= ap->length) ap->index = 0;
             }
         }
+        const float *late = rev;
+        if (r->half) { float hb[4 + MAX_GRAIN]; memcpy(hb + 4, rev, m * sizeof(float)); up_run(r->up[c], hb, up_buf, m & ~3u); late = up_buf; }
         float *z = r->hf_z[c], k = r->hf_k, b = (1.0f - k) * (1.0f - k);
         for (uint32_t i = 0; i < n; ++i) {
-            float y = r->er_gain * er[i] + r->late_gain * rev[i];
+            float y = r->er_gain * er[i] + r->late_gain * late[i];
             if (k != 0.0f) { y = b * y + 2.0f * k * z[0] - k * k * z[1]; z[1] = z[0]; z[0] = y; }
             data[c][i] = (w0 + (float)i * ws) * y + (d0 + (float)i * ds) * (c < in_channels ? data[c][i] : 0.0f);
         }
@@ -1506,6 +1631,7 @@ static void apply_param(Voice *v, const ParamHeader *p) {
             if (v->state == ST_FREE) v->state = ST_READY;
             return;
         case 0x20010001: if (v->reverb && p->size >= 0x40) reverb_set_i3dl2(v->reverb, p, f32_at, u32_at); return;
+        case 0x20010002: if (v->reverb && p->size >= 0xBC) reverb_set_custom(v->reverb, p, f32_at, u32_at); return;
         case 0x30000002: {  /* LFE: enable, cut-off 80/120/240 Hz */
             uint32_t fc = u32_at(p, 12);
             if (fc != 80 && fc != 120 && fc != 240) return;
