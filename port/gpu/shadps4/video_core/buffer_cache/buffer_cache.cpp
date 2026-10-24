@@ -211,6 +211,10 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
         gpu_modified_ranges.Subtract(address, size);
     });
     if (total_size_bytes == 0) {
+        // tlg: pages flagged GPU-modified with nothing left to download (the range set and the
+        // page tracker disagree) must still lose the flag and the read protection, otherwise
+        // every CPU read of them faults again and again.
+        memory_tracker->UnmarkRegionAsGpuModified(device_addr, size);
         return;
     }
     const auto download = staging_pool.Request(total_size_bytes, VideoCore::MemoryType::HostCached);
