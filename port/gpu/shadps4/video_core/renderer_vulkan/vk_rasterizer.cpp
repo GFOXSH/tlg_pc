@@ -466,13 +466,13 @@ void Rasterizer::DrainDrawPipe(u32 reason, u32 line, const char* function) {
 }
 
 bool Rasterizer::IsGpuSideThread() const {
-    return OnStageA() || DrawPipe::OnStageB();
+    return OnStageA() || DrawPipe::OnStageB() || DrawPreparation::IsPrepWorker();
 }
 
 bool Rasterizer::IsGpuSideThreadId(u32 tid) const {
-    // The userfaultfd thread handles the fault while the faulting thread waits: without locks
-    // only if that thread owns the caches. The GPU command thread does not while the draw
-    // recording thread may be running, so its faults take the locked path of guest threads.
+    if (DrawPreparation::IsPrepWorker()) {
+        return true;
+    }
     if (draw_pipe) {
         return tid == draw_pipe->StageBThreadId();
     }

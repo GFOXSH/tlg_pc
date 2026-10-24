@@ -157,6 +157,11 @@ public:
     [[nodiscard]] std::shared_ptr<const void> KeepCurrent() const {
         return current;
     }
+	
+	static inline thread_local bool is_prep_worker = false;
+    static bool IsPrepWorker() noexcept {
+        return is_prep_worker;
+    }
 
 private:
     u32 current_draw = 0;

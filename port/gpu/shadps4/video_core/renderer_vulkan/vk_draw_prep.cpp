@@ -325,6 +325,7 @@ void DrawPreparation::Collect() {
 }
 
 void DrawPreparation::ScannerLoop(std::stop_token stop) {
+	is_prep_worker = true;
     Common::SetCurrentThreadName("tlg:DrawScan");
     TlgThreads::MakeBackground();
     std::unique_ptr<AmdGpu::Regs> regs;
@@ -379,6 +380,7 @@ void DrawPreparation::ScannerLoop(std::stop_token stop) {
 }
 
 void DrawPreparation::WorkerLoop(std::stop_token stop, u32 index) {
+	is_prep_worker = true;
     Common::SetCurrentThreadName(("tlg:DrawPrep" + std::to_string(index)).c_str());
     TlgThreads::MakeBackground();
     auto regs = std::make_unique<AmdGpu::Regs>();
