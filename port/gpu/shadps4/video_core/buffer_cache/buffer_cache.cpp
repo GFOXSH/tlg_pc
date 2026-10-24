@@ -119,6 +119,10 @@ BufferCache::~BufferCache() = default;
 
 void BufferCache::InvalidateMemory(VAddr device_addr, u64 size, bool assume_locks) {
     memory_tracker->InvalidateRegion(device_addr, size, [this, device_addr, size, assume_locks] {
+        if (!IsRegionGpuModified(device_addr, size)) {
+            memory_tracker->MarkRegionAsCpuModified(device_addr, size);
+            return;
+        }
         ReadMemory(device_addr, size, true, assume_locks);
     });
 }
