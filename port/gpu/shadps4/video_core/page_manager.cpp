@@ -520,7 +520,11 @@ struct SignalImpl : public PageManager::Impl {
 
 PageManager::PageManager(Vulkan::Rasterizer* rasterizer_) {
 #ifdef __linux__
-    if (std::getenv("TLG_UFFD") && std::getenv("TLG_UFFD")[0] == '1') {
+    const char* uffd = std::getenv("TLG_UFFD");
+    const char* draw_pipe = std::getenv("TLG_DRAW_PIPE");
+    // userfaultfd resolves the fault on a helper thread and cannot arm single-step on the
+    // faulting thread. Use signal faults with DrawPipe so page reprotection waits for the store.
+    if (uffd && uffd[0] == '1' && !(draw_pipe && draw_pipe[0] == '1')) {
         try {
             impl = std::make_unique<UffdImpl>(rasterizer_);
             LOG_INFO(Config, "Memory tracking method: userfaultfd");
@@ -528,6 +532,10 @@ PageManager::PageManager(Vulkan::Rasterizer* rasterizer_) {
         } catch (const std::runtime_error& e) {
             // if uffd is unsupported, falls back to SignalImpl
         }
+    } else if (uffd && uffd[0] == '1') {
+        LOG_WARNING(Config,
+                    "TLG_UFFD disabled while TLG_DRAW_PIPE=1: signal faults are required to "
+                    "defer page reprotection until a guest store retires");
     }
     LOG_INFO(Config, "Memory tracking method: signals");
 #endif
