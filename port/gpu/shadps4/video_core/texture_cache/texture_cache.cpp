@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <array>
+#include <optional>
 #include <xxhash.h>
 #include "video_core/amdgpu/liverpool.h"
 
@@ -28,6 +30,37 @@ namespace VideoCore {
 
 static constexpr u64 PageShift = 12;
 static constexpr u64 NumFramesBeforeRemoval = 32;
+
+// Texture-cache checks must not hash guest virtual memory directly: with precise GPU
+// readbacks, that address can be PAGE_NOACCESS and fault back into a readback that waits
+// for the current renderer thread. Read the same bytes through the runtime's unprotected
+// backing view and stream large mip levels so the hash does not require a full-size copy.
+static std::optional<u64> HashGuestBacking(VAddr address, u64 size) {
+    XXH3_state_t* state = XXH3_createState();
+    if (!state) {
+        return std::nullopt;
+    }
+    SCOPE_EXIT {
+        XXH3_freeState(state);
+    };
+    if (XXH3_64bits_reset(state) != XXH_OK) {
+        return std::nullopt;
+    }
+
+    std::array<u8, 16 * 1024> chunk{};
+    while (size != 0) {
+        const size_t count = static_cast<size_t>(std::min<u64>(size, chunk.size()));
+        if (!Core::Memory::Instance()->TryReadBacking(address, chunk.data(), count)) {
+            return std::nullopt;
+        }
+        if (XXH3_64bits_update(state, chunk.data(), count) != XXH_OK) {
+            return std::nullopt;
+        }
+        address += count;
+        size -= count;
+    }
+    return XXH3_64bits_digest(state);
+}
 
 TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
                            Vulkan::Runtime& runtime_, AmdGpu::Liverpool* liverpool_,
@@ -1156,19 +1189,19 @@ void TextureCache::RefreshImage(Image& image) {
         // The image size should be less than page size to be considered MaybeCpuDirty
         // So this calculation should be very uncommon and reasonably fast
         // For now we'll just check up to 64 first pixels
-        const auto addr = std::bit_cast<u8*>(image.info.guest_address);
         const u32 w = std::min(image.info.size.width, u32(8));
         const u32 h = std::min(image.info.size.height, u32(8));
 
         const u32 s_w = image.info.props.is_block ? Common::DivCeil(w, 4u) : w;
         const u32 s_h = image.info.props.is_block ? Common::DivCeil(h, 4u) : h;
         const u32 size = s_w * s_h * (image.info.num_bits / 8);
-        const u64 hash = XXH3_64bits(addr, size);
-        if (image.hash == hash) {
-            image.flags &= ~ImageFlagBits::MaybeCpuDirty;
-            return;
+        if (const auto hash = HashGuestBacking(image.info.guest_address, size)) {
+            if (image.hash == *hash) {
+                image.flags &= ~ImageFlagBits::MaybeCpuDirty;
+                return;
+            }
+            image.hash = *hash;
         }
-        image.hash = hash;
     }
 
     const u32 num_layers = image.info.resources.layers;
@@ -1187,12 +1220,13 @@ void TextureCache::RefreshImage(Image& image) {
 
         // Protect GPU modified resources from accidental CPU reuploads.
         if (is_gpu_modified && !is_gpu_dirty) {
-            const u8* addr = std::bit_cast<u8*>(image.info.guest_address);
-            const u64 hash = XXH3_64bits(addr + mip_offset, mip_size);
-            if (image.mip_hashes[m] == hash) {
+            const auto hash = HashGuestBacking(image.info.guest_address + mip_offset, mip_size);
+            if (hash && image.mip_hashes[m] == *hash) {
                 continue;
             }
-            image.mip_hashes[m] = hash;
+            if (hash) {
+                image.mip_hashes[m] = *hash;
+            }
         }
 
         const u32 extent_width = mip_pitch ? std::min(mip_pitch, width) : width;
