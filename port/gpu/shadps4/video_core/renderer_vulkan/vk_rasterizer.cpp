@@ -795,18 +795,21 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
                 continue;
             }
             std::vector<u32> flat(snapshot.flat_size);
-            std::memcpy(flat.data(), snapshot.user_data,
-                        std::min(snapshot.user_data_size, snapshot.flat_size) * sizeof(u32));
-            // Pointers in the tables may be stale by now: a fault only skips the check.
+            // Pointers in the tables may be stale by now: a fault anywhere in this diagnostic
+            // check only skips it; it must not enter the normal GPU readback path.
             sigjmp_buf recover;
             if (sigsetjmp(recover, 0)) {
                 runtime_fault_recover = nullptr;
                 continue;
             }
             runtime_fault_recover = &recover;
+            std::memcpy(flat.data(), snapshot.user_data,
+                        std::min(snapshot.user_data_size, snapshot.flat_size) * sizeof(u32));
             srt.walker_func(snapshot.user_data, flat.data());
+            const bool changed =
+                std::memcmp(flat.data(), snapshot.flat, snapshot.flat_size * sizeof(u32)) != 0;
             runtime_fault_recover = nullptr;
-            if (std::memcmp(flat.data(), snapshot.flat, snapshot.flat_size * sizeof(u32)) != 0) {
+            if (changed) {
                 u32 first = 0, count = 0;
                 for (u32 w = 0; w < snapshot.flat_size; ++w) {
                     if (flat[w] != snapshot.flat[w]) {
