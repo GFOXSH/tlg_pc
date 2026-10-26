@@ -7,6 +7,7 @@
 #include <vector>
 #include <chrono>
 #include <mutex>
+#include <atomic>
 #include <algorithm>
 #include <unordered_map>
 #include <boost/container/small_vector.hpp>
@@ -77,10 +78,14 @@ struct PageManager::Impl {
     // Keep a faulting CPU store's page writable until that store retires. DrawRec may
     // re-register the page after the fault handler returns but before the CPU retries it.
     void ProtectTracked(VAddr address, size_t size, Core::MemoryPermission perms) {
+        const bool writable = True(perms & Core::MemoryPermission::Write);
+        if (writable || active_fault_pages.load(std::memory_order_acquire) == 0) {
+            Protect(address, size, perms);
+            return;
+        }
         const VAddr end = address + size;
         VAddr run_begin = address;
         bool in_run = false;
-        const bool writable = True(perms & Core::MemoryPermission::Write);
         for (VAddr page_addr = address; page_addr < end; page_addr += PM_PAGE_SIZE) {
             bool defer = false;
             if (!writable) {
@@ -107,7 +112,10 @@ struct PageManager::Impl {
         const size_t page = address >> PM_PAGE_BITS;
         std::scoped_lock page_lock{locks[page / PAGES_PER_LOCK]};
         std::scoped_lock fault_lock{active_fault_mutex};
-        ++active_write_faults[page];
+        auto& count = active_write_faults[page];
+        if (count++ == 0) {
+            active_fault_pages.fetch_add(1, std::memory_order_release);
+        }
     }
 
     void CompleteWriteFault(VAddr address) {
@@ -122,6 +130,7 @@ struct PageManager::Impl {
             }
             if (--it->second == 0) {
                 active_write_faults.erase(it);
+                active_fault_pages.fetch_sub(1, std::memory_order_release);
                 last_fault = true;
             }
         }
@@ -356,6 +365,7 @@ struct PageManager::Impl {
     std::array<LockType, NUM_ADDRESS_LOCKS> locks{};
     std::mutex active_fault_mutex;
     std::unordered_map<size_t, u32> active_write_faults;
+    std::atomic<size_t> active_fault_pages{0};
 };
 
 #ifdef __linux__
