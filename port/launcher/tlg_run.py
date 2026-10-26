@@ -153,8 +153,10 @@ def load_settings():
             settings['readback_linear'] = ini['readback_linear'] != '0'
     except ValueError:
         pass
-    if 'key_map' in ini:    except ValueError:
-        pass
+    # DrawPipe can re-protect guest pages while a worker thread is retrying a write fault.
+    # A stale settings file or tlg.ini must not silently re-enable this unstable path.
+    if not settings.get('draw_pipe_opt_in', False):
+        settings['draw_pipe'] = False
     if 'key_map' in ini:
         settings['key_map'] = parse_key_map(ini['key_map'])
     return settings
