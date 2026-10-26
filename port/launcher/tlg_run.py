@@ -83,7 +83,8 @@ DEFAULT_SETTINGS = {
     'frame_rate': '30',            # 30 | 60 | unlocked (scripts/tlg_patches.py; TLG_FPS wins)
     'resolution': '1080p',
     'readback_linear': True,
-    'draw_pipe': True,
+    'draw_pipe': False,
+    'draw_pipe_opt_in': False,
 }
 FRAME_RATES = ['30', '60', 'unlocked']
 RESOLUTIONS = ['360p', '720p', '1080p',  '1440p', '4k']
@@ -150,9 +151,9 @@ def load_settings():
             settings['mouse_sensitivity'] = min(5.0, max(0.1, float(ini['mouse_sensitivity'])))
         if 'readback_linear' in ini:
             settings['readback_linear'] = ini['readback_linear'] != '0'
-        if 'draw_pipe' in ini:
-            settings['draw_pipe'] = ini['draw_pipe'] != '0'
     except ValueError:
+        pass
+    if 'key_map' in ini:    except ValueError:
         pass
     if 'key_map' in ini:
         settings['key_map'] = parse_key_map(ini['key_map'])
@@ -450,7 +451,7 @@ def build_env(settings, extra=None):
     # shadPS4's ~/.local/share/shadPS4 and Windows <saves>/user).
     env['TLG_GPU_USER_DIR'] = str(gpu_user_dir())
     env['TLG_READBACK_LINEAR'] = os.environ.get('TLG_READBACK_LINEAR', '1' if settings.get('readback_linear', True) else '0')
-    env['TLG_DRAW_PIPE'] = os.environ.get('TLG_DRAW_PIPE', '1' if settings.get('draw_pipe', True) else '0')
+    env['TLG_DRAW_PIPE'] = os.environ.get('TLG_DRAW_PIPE', '1' if settings.get('draw_pipe', False) else '0')
     if extra:
         env.update(extra)
     return env
@@ -484,7 +485,6 @@ def launch(settings, seconds=0, extra_env=None):
         'mouse_invert_y': int(bool(settings.get('mouse_invert_y', False))),
         'key_map': key_map_spec(settings.get('key_map') or {}),
         'readback_linear': int(bool(settings.get('readback_linear', True))),
-        'draw_pipe': int(bool(settings.get('draw_pipe', True))),
     })
     log = new_log()
     cmd = [str(PROBE), str(OUT_DIR / 'boot-linked.bin'), '--app0', settings['game_dir'],
