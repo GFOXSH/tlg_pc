@@ -136,6 +136,9 @@ void MemoryManager::CopySparseMemory(VAddr source, u8* dest, u64 size) {
         CopySparseSerial(source + offset, dest + offset, std::min(Chunk, size - offset));
     });
 }
+bool MemoryManager::TryReadBacking(VAddr address, void* data, u64 size) {
+    return runtime_memory_read_backing(address, data, size) != 0;
+}
 bool MemoryManager::TryWriteBacking(void* address, const void* data, u64 size) {
     TlgWriteLog::Note(reinterpret_cast<uintptr_t>(address), data, size, TlgWriteLog::Backing);
     return runtime_memory_write_backing(reinterpret_cast<uintptr_t>(address), data, size) != 0;
