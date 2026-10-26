@@ -118,6 +118,21 @@ struct PageManager::Impl {
         }
     }
 
+    void PrepareWriteFaultRetry(VAddr address) {
+        const size_t page = address >> PM_PAGE_BITS;
+        std::scoped_lock page_lock{locks[page / PAGES_PER_LOCK]};
+        {
+            std::scoped_lock fault_lock{active_fault_mutex};
+            if (!active_write_faults.contains(page)) {
+                return;
+            }
+        }
+        // Invalidation may leave another watcher on this page, so the normal watcher count can
+        // still demand read-only protection. The faulting store must nevertheless get one retry;
+        // CompleteWriteFault restores the current watcher-derived permissions after it retires.
+        Protect(page << PM_PAGE_BITS, PM_PAGE_SIZE, Core::MemoryPermission::ReadWrite);
+    }
+
     void CompleteWriteFault(VAddr address) {
         const size_t page = address >> PM_PAGE_BITS;
         std::scoped_lock page_lock{locks[page / PAGES_PER_LOCK]};
@@ -207,7 +222,9 @@ struct PageManager::Impl {
             TlgStats::Timer timer{TlgStats::t_write_faults};
             rasterizer->BeginWriteFault(addr);
             const bool handled = rasterizer->OnWriteFault(addr, is_gpu_thread);
-            if (!handled) {
+            if (handled) {
+                rasterizer->PrepareWriteFaultRetry(addr);
+            } else {
                 rasterizer->CompleteWriteFault(addr);
             }
             return handled;
@@ -564,6 +581,10 @@ void PageManager::OnGpuUnmap(VAddr address, size_t size) {
 
 void PageManager::BeginWriteFault(VAddr address) {
     impl->BeginWriteFault(address);
+}
+
+void PageManager::PrepareWriteFaultRetry(VAddr address) {
+    impl->PrepareWriteFaultRetry(address);
 }
 
 void PageManager::CompleteWriteFault(VAddr address) {

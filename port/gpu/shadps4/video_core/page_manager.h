@@ -40,6 +40,7 @@ public:
 
     /// Hold restrictive protection changes until the faulting store retires.
     void BeginWriteFault(VAddr address);
+    void PrepareWriteFaultRetry(VAddr address);
     void CompleteWriteFault(VAddr address);
 
     /// Updates watches in the pages touching the specified region.

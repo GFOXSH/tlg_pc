@@ -3184,6 +3184,12 @@ void Rasterizer::BeginWriteFault(VAddr addr) {
     }
 }
 
+void Rasterizer::PrepareWriteFaultRetry(VAddr addr) {
+    if (WriteFaultLeaseEnabled()) {
+        page_manager.PrepareWriteFaultRetry(addr);
+    }
+}
+
 void Rasterizer::CompleteWriteFault(VAddr addr) {
     page_manager.CompleteWriteFault(addr);
 }
