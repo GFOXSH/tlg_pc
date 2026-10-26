@@ -878,7 +878,23 @@ void runtime_memory_gpu_protect(uintptr_t address, uint64_t size, int read, int 
         uintptr_t b=vmas[i].end<address+size ? vmas[i].end : address+size;
         int guest=host_prot(vmas[i].prot);
         int want=(read ? PROT_READ : 0)|(write ? PROT_WRITE|PROT_READ : 0)|(guest & PROT_EXEC);
-        host_protect(a,b-a,guest & want);
+        const int result = host_protect(a, b - a, guest & want);
+        if (result != 0) {
+#ifdef _WIN32
+            const unsigned long error = GetLastError();
+            fprintf(stderr,
+                    "STOP: GPU page protection failed at %p (+0x%" PRIxPTR
+                    "), read=%d write=%d, error %lu\n",
+                    (void *)a, b - a, read, write, error);
+#else
+            const int error = errno;
+            fprintf(stderr,
+                    "STOP: GPU page protection failed at %p (+0x%" PRIxPTR
+                    "), read=%d write=%d, error %d (%s)\n",
+                    (void *)a, b - a, read, write, error, strerror(error));
+#endif
+            abort();
+        }
     }
     read_unlock();
 }
