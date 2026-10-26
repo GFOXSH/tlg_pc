@@ -3186,8 +3186,9 @@ bool* Rasterizer::SetWriteFaultLeaseMarker(bool* marker) {
 }
 
 void Rasterizer::BeginWriteFault(VAddr addr) {
-    if (WriteFaultLeaseEnabled() && page_manager.BeginWriteFault(addr) &&
-        active_write_fault_lease_marker) {
+    // A lease must be reported to the fault dispatcher that will arm single-step for it.
+    if (WriteFaultLeaseEnabled() && active_write_fault_lease_marker &&
+        page_manager.BeginWriteFault(addr)) {
         *active_write_fault_lease_marker = true;
     }
 }
