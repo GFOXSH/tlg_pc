@@ -536,11 +536,15 @@ class Launcher:
     def check(self, parent, row, key):
         var = tk.BooleanVar(value=bool(self.settings[key]))
         self.vars[key] = var
-        ttk.Checkbutton(parent, text=self.t(key), variable=var, command=self.changed).grid(
+        ttk.Checkbutton(parent, text=self.t(key), variable=var,
+                        command=lambda k=key: self.changed(k)).grid(
             row=row, column=0, columnspan=3, sticky='w', pady=2)
 
     # -- actions ----------------------------------------------------------------------------
-    def changed(self):
+    def changed(self, changed_key=None):
+        if changed_key == 'draw_pipe':
+            # Enabling DrawPipe is an explicit opt-in; old saved values are ignored by default.
+            self.settings['draw_pipe_opt_in'] = True
         for key, var in self.vars.items():
             try:
                 self.settings[key] = var.get()
