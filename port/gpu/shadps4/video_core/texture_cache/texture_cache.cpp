@@ -1057,14 +1057,9 @@ ImageView& TextureCache::FindTexture(ImageId image_id, const ImageDesc& desc, Vi
     if (memo && !TlgToggle::Disabled(TlgToggle::TextureViewMemo)) {
         if (memo->image_id == image_id && memo->image_uid == image.image_uid &&
             memo->backing == image.backing && memo->view_id) {
-            // tlg: the memo is keyed by slot index and backing pointer, both of which get reused
-            // when an image is evicted and a new one lands in the same slot (the GC evicts ~1000
-            // images per 5 s here). Only trust the memo if the view still belongs to this image;
-            // otherwise a freed/reused view id is bound and the sampled texture is garbage.
-            const auto& memo_ids = image.backing->image_view_ids;
-            if (std::ranges::find(memo_ids, memo->view_id) != memo_ids.end()) {
-                return slot_image_views[memo->view_id];
-            }
+            // The slot index and backing pointer can be reused after eviction; image_uid
+            // distinguishes a new Image instance from the one recorded in this memo.
+            return slot_image_views[memo->view_id];
         }
         ImageView& view = image.FindView(desc.view_info);
         const auto& ids = image.backing->image_view_ids;
