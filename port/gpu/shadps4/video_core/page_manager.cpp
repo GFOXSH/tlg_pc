@@ -6,6 +6,7 @@
 #endif
 #include <vector>
 #include <chrono>
+#include <mutex>
 #include <algorithm>
 #include <unordered_map>
 #include <boost/container/small_vector.hpp>
@@ -73,6 +74,62 @@ struct PageManager::Impl {
 
     virtual void Protect(VAddr address, size_t size, Core::MemoryPermission perms) = 0;
 
+    // Keep a faulting CPU store's page writable until that store retires. DrawRec may
+    // re-register the page after the fault handler returns but before the CPU retries it.
+    void ProtectTracked(VAddr address, size_t size, Core::MemoryPermission perms) {
+        const VAddr end = address + size;
+        VAddr run_begin = address;
+        bool in_run = false;
+        const bool writable = True(perms & Core::MemoryPermission::Write);
+        for (VAddr page_addr = address; page_addr < end; page_addr += PM_PAGE_SIZE) {
+            bool defer = false;
+            if (!writable) {
+                const size_t page = page_addr >> PM_PAGE_BITS;
+                std::scoped_lock lock{active_fault_mutex};
+                defer = active_write_faults.contains(page);
+            }
+            if (defer) {
+                if (in_run) {
+                    Protect(run_begin, page_addr - run_begin, perms);
+                    in_run = false;
+                }
+            } else if (!in_run) {
+                run_begin = page_addr;
+                in_run = true;
+            }
+        }
+        if (in_run) {
+            Protect(run_begin, end - run_begin, perms);
+        }
+    }
+
+    void BeginWriteFault(VAddr address) {
+        const size_t page = address >> PM_PAGE_BITS;
+        std::scoped_lock page_lock{locks[page / PAGES_PER_LOCK]};
+        std::scoped_lock fault_lock{active_fault_mutex};
+        ++active_write_faults[page];
+    }
+
+    void CompleteWriteFault(VAddr address) {
+        const size_t page = address >> PM_PAGE_BITS;
+        std::scoped_lock page_lock{locks[page / PAGES_PER_LOCK]};
+        bool last_fault = false;
+        {
+            std::scoped_lock fault_lock{active_fault_mutex};
+            const auto it = active_write_faults.find(page);
+            if (it == active_write_faults.end()) {
+                return;
+            }
+            if (--it->second == 0) {
+                active_write_faults.erase(it);
+                last_fault = true;
+            }
+        }
+        if (last_fault) {
+            Protect(page << PM_PAGE_BITS, PM_PAGE_SIZE, cached_pages[page].Perms());
+        }
+    }
+
     // tlg: TLG_FAULT_PROFILE=1 prints, every 5 s, the guest instructions whose faults on GPU
     // tracked pages cost the most time (which game code waits on the GPU, and for what).
     struct FaultSite { u64 count = 0, ns = 0; VAddr last = 0; u64 caller = 0; bool write = false; };
@@ -139,7 +196,12 @@ struct PageManager::Impl {
         }
         if (Common::IsWriteError(context)) {
             TlgStats::Timer timer{TlgStats::t_write_faults};
-            return rasterizer->OnWriteFault(addr, is_gpu_thread);
+            rasterizer->BeginWriteFault(addr);
+            const bool handled = rasterizer->OnWriteFault(addr, is_gpu_thread);
+            if (!handled) {
+                rasterizer->CompleteWriteFault(addr);
+            }
+            return handled;
         } else {
             TlgStats::read_faults.fetch_add(1, std::memory_order_relaxed);
             TlgStats::Timer timer{TlgStats::t_read_faults};
@@ -169,7 +231,7 @@ struct PageManager::Impl {
             if (range_bytes > 0) {
                 RENDERER_TRACE;
                 // Perform pending (un)protect action
-                Protect(range_begin << PM_PAGE_BITS, range_bytes, perms);
+                ProtectTracked(range_begin << PM_PAGE_BITS, range_bytes, perms);
                 range_bytes = 0;
                 potential_range_bytes = 0;
             }
@@ -240,7 +302,7 @@ struct PageManager::Impl {
             if (range_bytes > 0) {
                 RENDERER_TRACE;
                 // Perform pending (un)protect action
-                Protect((range_begin << PM_PAGE_BITS), range_bytes, perms);
+                ProtectTracked((range_begin << PM_PAGE_BITS), range_bytes, perms);
                 range_bytes = 0;
                 potential_range_bytes = 0;
             }
@@ -292,6 +354,8 @@ struct PageManager::Impl {
     using LockType = Common::SpinLock;
 #endif
     std::array<LockType, NUM_ADDRESS_LOCKS> locks{};
+    std::mutex active_fault_mutex;
+    std::unordered_map<size_t, u32> active_write_faults;
 };
 
 #ifdef __linux__
@@ -478,6 +542,14 @@ void PageManager::OnGpuMap(VAddr address, size_t size) {
 
 void PageManager::OnGpuUnmap(VAddr address, size_t size) {
     impl->OnUnmap(address, size);
+}
+
+void PageManager::BeginWriteFault(VAddr address) {
+    impl->BeginWriteFault(address);
+}
+
+void PageManager::CompleteWriteFault(VAddr address) {
+    impl->CompleteWriteFault(address);
 }
 
 template <bool track, bool is_read>

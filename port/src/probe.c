@@ -38,6 +38,37 @@ static LinkedModule modules[16];
 static uint64_t module_count;
 static int entered_game;
 static int gpu_enabled;
+static __thread uintptr_t pending_write_faults[8];
+static __thread unsigned pending_write_fault_count;
+static __thread int pending_write_fault_old_tf;
+
+/* The page tracker must not re-protect a page until the CPU has retried and retired
+ * the store that faulted. Single-step once after that instruction, then release the lease. */
+static void remember_write_fault(uintptr_t address, int old_tf) {
+    if (pending_write_fault_count == 0) {
+        pending_write_fault_old_tf = old_tf;
+    }
+    if (pending_write_fault_count == sizeof(pending_write_faults) / sizeof(pending_write_faults[0])) {
+        fputs("STOP: too many pages faulted by one pending write instruction\n", stderr);
+        abort();
+    }
+    pending_write_faults[pending_write_fault_count++] = address;
+}
+
+static int finish_write_faults(void) {
+    if (pending_write_fault_count == 0) {
+        return -1;
+    }
+    const unsigned count = pending_write_fault_count;
+    const int old_tf = pending_write_fault_old_tf;
+    pending_write_fault_count = 0;
+    pending_write_fault_old_tf = 0;
+    for (unsigned i = 0; i < count; ++i) {
+        tlggpu_complete_write_fault((void *)pending_write_faults[i]);
+    }
+    return old_tf;
+}
+
 static unsigned cpu_missing_sets; /* CPU_SET_* the host lacks; the guest code needs them rewritten */
 static IsaTable *isa_table; /* rewritten sites (--isa-rewrite); the fault handlers and the report read it */
 #ifndef _WIN32
@@ -203,6 +234,12 @@ static void isa_context_regs(CONTEXT *c, IsaRegs *regs, int to_context) {
 static LONG CALLBACK vectored_fault(EXCEPTION_POINTERS *info) {
     const EXCEPTION_RECORD *record=info->ExceptionRecord;
     DWORD code=record->ExceptionCode;
+    if (code == EXCEPTION_SINGLE_STEP && pending_write_fault_count) {
+        const int old_tf = finish_write_faults();
+        if (old_tf) info->ContextRecord->EFlags |= 0x100;
+        else info->ContextRecord->EFlags &= ~0x100;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
     if (code==EXCEPTION_BREAKPOINT && isa_table) {
         /* An int3 ISA site: emulated here; any other breakpoint goes on to the report below. */
         IsaRegs regs;
@@ -232,7 +269,14 @@ static LONG CALLBACK vectored_fault(EXCEPTION_POINTERS *info) {
             return EXCEPTION_CONTINUE_EXECUTION;
         }
         /* Only non-speculative accesses may wait for GPU page tracking/readback. */
-        if (gpu_enabled && tlggpu_handle_fault(info,(void *)record->ExceptionInformation[1])) return EXCEPTION_CONTINUE_EXECUTION;
+        if (gpu_enabled && tlggpu_handle_fault(info,(void *)record->ExceptionInformation[1])) {
+            if (record->ExceptionInformation[0] == 1) {
+                remember_write_fault((uintptr_t)record->ExceptionInformation[1],
+                                     (info->ContextRecord->EFlags & 0x100) != 0);
+                info->ContextRecord->EFlags |= 0x100;
+            }
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
     }
     if (code==EXCEPTION_ACCESS_VIOLATION || code==EXCEPTION_ILLEGAL_INSTRUCTION || code==EXCEPTION_PRIV_INSTRUCTION ||
         code==EXCEPTION_STACK_OVERFLOW || code==EXCEPTION_INT_DIVIDE_BY_ZERO || code==EXCEPTION_DATATYPE_MISALIGNMENT) {
@@ -309,6 +353,13 @@ static void clobber_below(ucontext_t *uc) {
     if (n > 0) { ssize_t written_ = write(2, line, (size_t)n); (void)written_; }
 }
 static void fault(int sig, siginfo_t *info, void *context) {
+    if (sig == SIGTRAP && info->si_code == TRAP_TRACE && pending_write_fault_count) {
+        ucontext_t *uc = context;
+        const int old_tf = finish_write_faults();
+        if (old_tf) uc->uc_mcontext.gregs[REG_EFL] |= 0x100;
+        else uc->uc_mcontext.gregs[REG_EFL] &= ~((greg_t)0x100);
+        return;
+    }
     if (sig == SIGTRAP && isa_table) {
         /* An int3 ISA site (RIP is past the CC byte); any other trap ends in the report below. */
         greg_t *g = ((ucontext_t *)context)->uc_mcontext.gregs;
@@ -346,6 +397,12 @@ static void fault(int sig, siginfo_t *info, void *context) {
     }
     /* GPU page tracking (write-protected guest pages) is resolved next. */
     if (gpu_enabled && sig == SIGSEGV && tlggpu_handle_fault(context, info->si_addr)) {
+        ucontext_t *uc = context;
+        if (uc->uc_mcontext.gregs[REG_ERR] & 2) {
+            remember_write_fault((uintptr_t)info->si_addr,
+                                 (uc->uc_mcontext.gregs[REG_EFL] & 0x100) != 0);
+            uc->uc_mcontext.gregs[REG_EFL] |= 0x100;
+        }
         clobber_below(context);
         return;
     }

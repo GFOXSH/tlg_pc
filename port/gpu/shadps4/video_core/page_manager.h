@@ -38,6 +38,10 @@ public:
     /// Unregister a range of gpu memory that was unmapped.
     void OnGpuUnmap(VAddr address, size_t size);
 
+    /// Hold restrictive protection changes until the faulting store retires.
+    void BeginWriteFault(VAddr address);
+    void CompleteWriteFault(VAddr address);
+
     /// Updates watches in the pages touching the specified region.
     template <bool track, bool is_read = false>
     void UpdatePageWatchers(VAddr addr, u64 size) const;

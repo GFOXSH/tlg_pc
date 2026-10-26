@@ -290,6 +290,12 @@ extern "C" int tlggpu_handle_fault(void* ucontext, void* address) {
     return handled;
 }
 
+extern "C" void tlggpu_complete_write_fault(void* address) {
+    if (auto* rasterizer = Core::Memory::Instance()->GetRasterizer()) {
+        rasterizer->CompleteWriteFault(reinterpret_cast<VAddr>(address));
+    }
+}
+
 extern "C" void tlggpu_set_wait_hooks(TlgGpuWaitBegin begin, TlgGpuWaitEnd end) {
     TlgFreeze::end_hook.store(end);
     TlgFreeze::begin_hook.store(begin);

@@ -3171,6 +3171,14 @@ bool Rasterizer::OnWriteFault(VAddr addr, bool assume_locks) {
     return true;
 }
 
+void Rasterizer::BeginWriteFault(VAddr addr) {
+    page_manager.BeginWriteFault(addr);
+}
+
+void Rasterizer::CompleteWriteFault(VAddr addr) {
+    page_manager.CompleteWriteFault(addr);
+}
+
 bool Rasterizer::ReadMemory(VAddr addr, u64 size, bool assume_locks) {
     DrainDrawPipe();
     if (!IsMapped(addr, size)) {
