@@ -134,6 +134,8 @@ public:
     bool IsGpuSideThreadId(u32 tid) const;
     /// A guest write hit a protected page.
     bool OnWriteFault(VAddr addr, bool assume_locks);
+    /// Whether DrawPipe is active and page reprotection must wait for a store to retire.
+    bool WriteFaultLeaseEnabled() const;
     /// Keep protection changes deferred until the faulting store retires.
     void BeginWriteFault(VAddr addr);
     void CompleteWriteFault(VAddr addr);

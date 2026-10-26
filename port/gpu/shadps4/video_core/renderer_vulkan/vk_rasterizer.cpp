@@ -3171,12 +3171,20 @@ bool Rasterizer::OnWriteFault(VAddr addr, bool assume_locks) {
     return true;
 }
 
+bool Rasterizer::WriteFaultLeaseEnabled() const {
+    return draw_pipe && UseDrawPipe();
+}
+
 void Rasterizer::BeginWriteFault(VAddr addr) {
-    page_manager.BeginWriteFault(addr);
+    if (WriteFaultLeaseEnabled()) {
+        page_manager.BeginWriteFault(addr);
+    }
 }
 
 void Rasterizer::CompleteWriteFault(VAddr addr) {
-    page_manager.CompleteWriteFault(addr);
+    if (WriteFaultLeaseEnabled()) {
+        page_manager.CompleteWriteFault(addr);
+    }
 }
 
 bool Rasterizer::ReadMemory(VAddr addr, u64 size, bool assume_locks) {

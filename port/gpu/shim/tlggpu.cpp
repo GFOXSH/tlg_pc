@@ -290,6 +290,13 @@ extern "C" int tlggpu_handle_fault(void* ucontext, void* address) {
     return handled;
 }
 
+extern "C" int tlggpu_write_fault_lease_enabled(void) {
+    if (auto* rasterizer = Core::Memory::Instance()->GetRasterizer()) {
+        return rasterizer->WriteFaultLeaseEnabled() ? 1 : 0;
+    }
+    return 0;
+}
+
 extern "C" void tlggpu_complete_write_fault(void* address) {
     if (auto* rasterizer = Core::Memory::Instance()->GetRasterizer()) {
         rasterizer->CompleteWriteFault(reinterpret_cast<VAddr>(address));

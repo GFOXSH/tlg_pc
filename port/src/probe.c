@@ -270,7 +270,7 @@ static LONG CALLBACK vectored_fault(EXCEPTION_POINTERS *info) {
         }
         /* Only non-speculative accesses may wait for GPU page tracking/readback. */
         if (gpu_enabled && tlggpu_handle_fault(info,(void *)record->ExceptionInformation[1])) {
-            if (record->ExceptionInformation[0] == 1) {
+            if (record->ExceptionInformation[0] == 1 && tlggpu_write_fault_lease_enabled()) {
                 remember_write_fault((uintptr_t)record->ExceptionInformation[1],
                                      (info->ContextRecord->EFlags & 0x100) != 0);
                 info->ContextRecord->EFlags |= 0x100;
@@ -398,7 +398,7 @@ static void fault(int sig, siginfo_t *info, void *context) {
     /* GPU page tracking (write-protected guest pages) is resolved next. */
     if (gpu_enabled && sig == SIGSEGV && tlggpu_handle_fault(context, info->si_addr)) {
         ucontext_t *uc = context;
-        if (uc->uc_mcontext.gregs[REG_ERR] & 2) {
+        if ((uc->uc_mcontext.gregs[REG_ERR] & 2) && tlggpu_write_fault_lease_enabled()) {
             remember_write_fault((uintptr_t)info->si_addr,
                                  (uc->uc_mcontext.gregs[REG_EFL] & 0x100) != 0);
             uc->uc_mcontext.gregs[REG_EFL] |= 0x100;
