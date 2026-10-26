@@ -6,6 +6,7 @@
 #include <vector>
 #include "tlg_toggles.h"
 #include "common/assert.h"
+#include "core/memory.h"
 #include "shader_recompiler/frontend/decode.h"
 #include "shader_recompiler/frontend/fetch_shader.h"
 
@@ -110,10 +111,25 @@ std::optional<FetchShaderData> ParseFetchShader(const Shader::Info& info) {
         FetchShaderData data;
     };
     thread_local std::unordered_map<const u32*, CachedParse> cache;
-    if (const auto it = cache.find(code);
-        !TlgToggle::Disabled(TlgToggle::FetchShaderCache) && it != cache.end() &&
-        std::memcmp(code, it->second.code.data(), it->second.code.size() * sizeof(u32)) == 0) {
-        return it->second.data;
+    // The guest view can be PAGE_NOACCESS while GPU readback protection is active. Reading
+    // it directly on this GPU thread can fault and wait for readback work that needs this thread.
+    // Validate the cached parse through the unprotected backing view instead.
+    thread_local std::vector<u32> validation_copy;
+    const auto it = cache.find(code);
+    if (!TlgToggle::Disabled(TlgToggle::FetchShaderCache) && it != cache.end()) {
+        const auto& cached_code = it->second.code;
+        const size_t code_size = cached_code.size() * sizeof(u32);
+        if (code_size == 0) {
+            return it->second.data;
+        }
+        validation_copy.resize(cached_code.size());
+        const bool read_backing = Core::Memory::Instance()->TryReadBacking(
+            reinterpret_cast<VAddr>(code), validation_copy.data(), code_size);
+        const void* current_code = read_backing ? static_cast<const void*>(validation_copy.data())
+                                                : static_cast<const void*>(code);
+        if (std::memcmp(current_code, cached_code.data(), code_size) == 0) {
+            return it->second.data;
+        }
     }
 
     FetchShaderData data{};
