@@ -3218,7 +3218,10 @@ bool Rasterizer::ReadMemory(VAddr addr, u64 size, bool assume_locks) {
     // longer waits for the GPU command thread to reach its request (~3 ms per fault in inFAMOUS,
     // hundreds per second). TLG_FAST_READ_FAULT=0 restores the round trip.
     static const bool fast = [] { const char* e = std::getenv("TLG_FAST_READ_FAULT"); return !(e && *e == '0'); }();
-    if (fast && !assume_locks && !buffer_cache.IsRegionGpuModified(addr, size)) {
+    if (fast && !buffer_cache.IsRegionGpuModified(addr, size)) {
+        // Also applies on the GPU thread: if no buffer data needs downloading,
+        // BufferCache::ReadMemory may do no work and leave this read-protected page
+        // inaccessible, causing the same instruction to fault indefinitely.
         buffer_cache.ReleaseReadProtection(addr, size);
     } else if (!image_readback || buffer_cache.IsRegionGpuModified(addr, size)) {
         buffer_cache.ReadMemory(addr, size, false, assume_locks);
