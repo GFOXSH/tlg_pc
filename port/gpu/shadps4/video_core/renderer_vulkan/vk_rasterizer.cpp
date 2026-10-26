@@ -3175,16 +3175,30 @@ bool Rasterizer::WriteFaultLeaseEnabled() const {
     return UseDrawPipe();
 }
 
+namespace {
+thread_local bool write_fault_lease_created = false;
+} // namespace
+
+void Rasterizer::ClearWriteFaultLeaseMarker() {
+    write_fault_lease_created = false;
+}
+
+bool Rasterizer::TakeWriteFaultLeaseMarker() {
+    const bool created = write_fault_lease_created;
+    write_fault_lease_created = false;
+    return created;
+}
+
 void Rasterizer::BeginWriteFault(VAddr addr) {
-    if (WriteFaultLeaseEnabled()) {
-        page_manager.BeginWriteFault(addr);
+    if (WriteFaultLeaseEnabled() && page_manager.BeginWriteFault(addr)) {
+        write_fault_lease_created = true;
     }
 }
 
 void Rasterizer::PrepareWriteFaultRetry(VAddr addr) {
-    if (WriteFaultLeaseEnabled()) {
-        page_manager.PrepareWriteFaultRetry(addr);
-    }
+    // BeginWriteFault captured the DrawPipe decision for this fault. Do not re-evaluate a
+    // potentially changed runtime toggle here; PageManager is a no-op when no lease exists.
+    page_manager.PrepareWriteFaultRetry(addr);
 }
 
 void Rasterizer::CompleteWriteFault(VAddr addr) {

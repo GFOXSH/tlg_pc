@@ -39,7 +39,7 @@ public:
     void OnGpuUnmap(VAddr address, size_t size);
 
     /// Hold restrictive protection changes until the faulting store retires.
-    void BeginWriteFault(VAddr address);
+    bool BeginWriteFault(VAddr address);
     void PrepareWriteFaultRetry(VAddr address);
     void CompleteWriteFault(VAddr address);
 

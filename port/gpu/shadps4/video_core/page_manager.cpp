@@ -108,18 +108,27 @@ struct PageManager::Impl {
         }
     }
 
-    void BeginWriteFault(VAddr address) {
+    bool BeginWriteFault(VAddr address) {
         const size_t page = address >> PM_PAGE_BITS;
+        // Signal handlers also see unrelated host faults. The tracker only indexes the guest's
+        // 40-bit address space, so never index its fixed arrays for a host address outside it.
+        if (page >= NUM_ADDRESS_PAGES) {
+            return false;
+        }
         std::scoped_lock page_lock{locks[page / PAGES_PER_LOCK]};
         std::scoped_lock fault_lock{active_fault_mutex};
         auto& count = active_write_faults[page];
         if (count++ == 0) {
             active_fault_pages.fetch_add(1, std::memory_order_release);
         }
+        return true;
     }
 
     void PrepareWriteFaultRetry(VAddr address) {
         const size_t page = address >> PM_PAGE_BITS;
+        if (page >= NUM_ADDRESS_PAGES) {
+            return;
+        }
         std::scoped_lock page_lock{locks[page / PAGES_PER_LOCK]};
         {
             std::scoped_lock fault_lock{active_fault_mutex};
@@ -135,6 +144,9 @@ struct PageManager::Impl {
 
     void CompleteWriteFault(VAddr address) {
         const size_t page = address >> PM_PAGE_BITS;
+        if (page >= NUM_ADDRESS_PAGES) {
+            return;
+        }
         std::scoped_lock page_lock{locks[page / PAGES_PER_LOCK]};
         bool last_fault = false;
         {
@@ -579,8 +591,8 @@ void PageManager::OnGpuUnmap(VAddr address, size_t size) {
     impl->OnUnmap(address, size);
 }
 
-void PageManager::BeginWriteFault(VAddr address) {
-    impl->BeginWriteFault(address);
+bool PageManager::BeginWriteFault(VAddr address) {
+    return impl->BeginWriteFault(address);
 }
 
 void PageManager::PrepareWriteFaultRetry(VAddr address) {

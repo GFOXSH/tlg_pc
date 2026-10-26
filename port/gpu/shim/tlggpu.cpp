@@ -279,22 +279,24 @@ extern "C" uintptr_t tlggpu_resolve(const char* scoped_nid) {
 
 extern "C" int tlggpu_handle_fault(void* ucontext, void* address) {
     // tlg: the freeze report shows threads stuck in a page-protection fault (and how many).
+    auto* rasterizer = Core::Memory::Instance()->GetRasterizer();
+    if (rasterizer) {
+        // Clear stale state before dispatch. The PageManager's handler marks this thread only if
+        // it actually starts a write lease; the caller must not infer that from a later toggle read.
+        rasterizer->ClearWriteFaultLeaseMarker();
+    }
     TlgFreeze::faults_in_progress.fetch_add(1, std::memory_order_relaxed);
     int handled;
     {
         TlgFreeze::WaitScope wait{"GPU page fault handler", address};
         handled = Core::Signals::Instance()->DispatchAccessViolation(ucontext, address) ? 1 : 0;
     }
+    const bool has_write_lease = rasterizer && rasterizer->TakeWriteFaultLeaseMarker();
     TlgFreeze::faults_in_progress.fetch_sub(1, std::memory_order_relaxed);
     TlgFreeze::faults_handled.fetch_add(handled, std::memory_order_relaxed);
-    return handled;
-}
-
-extern "C" int tlggpu_write_fault_lease_enabled(void) {
-    if (auto* rasterizer = Core::Memory::Instance()->GetRasterizer()) {
-        return rasterizer->WriteFaultLeaseEnabled() ? 1 : 0;
-    }
-    return 0;
+    // 0 = unhandled, 1 = handled normally, 2 = handled and a write lease must be retired
+    // after the faulting store executes once.
+    return handled ? (has_write_lease ? 2 : 1) : 0;
 }
 
 extern "C" void tlggpu_complete_write_fault(void* address) {

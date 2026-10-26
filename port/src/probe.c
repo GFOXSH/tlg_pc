@@ -269,8 +269,10 @@ static LONG CALLBACK vectored_fault(EXCEPTION_POINTERS *info) {
             return EXCEPTION_CONTINUE_EXECUTION;
         }
         /* Only non-speculative accesses may wait for GPU page tracking/readback. */
-        if (gpu_enabled && tlggpu_handle_fault(info,(void *)record->ExceptionInformation[1])) {
-            if (record->ExceptionInformation[0] == 1 && tlggpu_write_fault_lease_enabled()) {
+        const int fault_result = gpu_enabled
+            ? tlggpu_handle_fault(info, (void *)record->ExceptionInformation[1]) : 0;
+        if (fault_result) {
+            if (fault_result == 2) {
                 remember_write_fault((uintptr_t)record->ExceptionInformation[1],
                                      (info->ContextRecord->EFlags & 0x100) != 0);
                 info->ContextRecord->EFlags |= 0x100;
@@ -395,10 +397,13 @@ static void fault(int sig, siginfo_t *info, void *context) {
         pthread_sigmask(SIG_UNBLOCK, &unblock, NULL);
         siglongjmp(*recover, 1);
     }
-    /* GPU page tracking (write-protected guest pages) is resolved next. */
-    if (gpu_enabled && sig == SIGSEGV && tlggpu_handle_fault(context, info->si_addr)) {
-        ucontext_t *uc = context;
-        if ((uc->uc_mcontext.gregs[REG_ERR] & 2) && tlggpu_write_fault_lease_enabled()) {
+    /* GPU page tracking (write-protected guest pages) is resolved next. The handler reports
+     * whether this exact fault created a write lease, avoiding a race with runtime toggle reads. */
+    const int fault_result = gpu_enabled && sig == SIGSEGV
+        ? tlggpu_handle_fault(context, info->si_addr) : 0;
+    if (fault_result) {
+        if (fault_result == 2) {
+            ucontext_t *uc = context;
             remember_write_fault((uintptr_t)info->si_addr,
                                  (uc->uc_mcontext.gregs[REG_EFL] & 0x100) != 0);
             uc->uc_mcontext.gregs[REG_EFL] |= 0x100;

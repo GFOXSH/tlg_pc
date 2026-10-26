@@ -20,10 +20,9 @@ void tlggpu_register_kernel(void);
 int tlggpu_init(const TlgGpuConfig *config);
 /* Function for an imported NID ("NID#lib#mod"), or 0 when the GPU library does not provide it. */
 uintptr_t tlggpu_resolve(const char *scoped_nid);
-/* Called first by the loader's SIGSEGV handler: 1 when a GPU page-tracking fault was handled. */
+/* Called first by the loader's access-violation handler: 0 unhandled, 1 handled, 2 handled with a
+ * write-fault lease that must be completed after the retried store retires. */
 int tlggpu_handle_fault(void *ucontext, void *address);
-/* Whether DrawPipe is active and write-fault single-step leases are needed. */
-int tlggpu_write_fault_lease_enabled(void);
 /* Called after a retried CPU store retires, to apply deferred page protections. */
 void tlggpu_complete_write_fault(void *address);
 /* TLG_WRITE_LOG=1: prints the logged GPU-side writes to guest memory near the fault. */
