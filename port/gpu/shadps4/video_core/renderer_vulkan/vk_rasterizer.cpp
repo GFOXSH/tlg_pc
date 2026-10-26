@@ -3172,7 +3172,10 @@ bool Rasterizer::OnWriteFault(VAddr addr, bool assume_locks) {
 }
 
 bool Rasterizer::WriteFaultLeaseEnabled() const {
-    return draw_pipe && UseDrawPipe();
+    // draw_pipe can be disabled by a live toggle while a write fault is in flight. Keep the
+    // lease protocol enabled whenever the pipeline exists; CompleteWriteFault is a no-op if
+    // BeginWriteFault did not create a lease.
+    return draw_pipe && !host_markers_enabled;
 }
 
 void Rasterizer::BeginWriteFault(VAddr addr) {
@@ -3182,9 +3185,7 @@ void Rasterizer::BeginWriteFault(VAddr addr) {
 }
 
 void Rasterizer::CompleteWriteFault(VAddr addr) {
-    if (WriteFaultLeaseEnabled()) {
-        page_manager.CompleteWriteFault(addr);
-    }
+    page_manager.CompleteWriteFault(addr);
 }
 
 bool Rasterizer::ReadMemory(VAddr addr, u64 size, bool assume_locks) {
