@@ -3176,22 +3176,19 @@ bool Rasterizer::WriteFaultLeaseEnabled() const {
 }
 
 namespace {
-thread_local bool write_fault_lease_created = false;
+thread_local bool* active_write_fault_lease_marker = nullptr;
 } // namespace
 
-void Rasterizer::ClearWriteFaultLeaseMarker() {
-    write_fault_lease_created = false;
-}
-
-bool Rasterizer::TakeWriteFaultLeaseMarker() {
-    const bool created = write_fault_lease_created;
-    write_fault_lease_created = false;
-    return created;
+bool* Rasterizer::SetWriteFaultLeaseMarker(bool* marker) {
+    bool* previous = active_write_fault_lease_marker;
+    active_write_fault_lease_marker = marker;
+    return previous;
 }
 
 void Rasterizer::BeginWriteFault(VAddr addr) {
-    if (WriteFaultLeaseEnabled() && page_manager.BeginWriteFault(addr)) {
-        write_fault_lease_created = true;
+    if (WriteFaultLeaseEnabled() && page_manager.BeginWriteFault(addr) &&
+        active_write_fault_lease_marker) {
+        *active_write_fault_lease_marker = true;
     }
 }
 
