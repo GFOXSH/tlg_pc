@@ -745,6 +745,17 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
             return {merged_image_id, -1, -1};
         }
 
+        // tlg: a 3D image at the same address with more slices (a stage switch reuses the
+        // memory of a smaller volume). Depth is not part of resources, so replace it.
+        if (image_info.type == AmdGpu::ImageType::Color3D &&
+            cache_image.info.type == AmdGpu::ImageType::Color3D &&
+            image_info.size.depth > cache_image.info.size.depth) {
+            if (safe_to_delete) {
+                FreeImage(cache_image_id);
+            }
+            return {merged_image_id, -1, -1};
+        }
+
         // Size is greater with same format and tile mode, but mip levels are not greater.
         // This occurs when the guest reuses an address with a different depth/array layout,
         // giving a different memory footprint despite identical dimensions. The cached image
