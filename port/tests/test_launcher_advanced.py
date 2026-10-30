@@ -52,9 +52,9 @@ class AdvancedReadbackSettingsTest(unittest.TestCase):
             'async_fences': True,
             'rb_hot': True,  # old settings.json key; the target GPU code has no TLG_RB_HOT.
         })
-        with mock.patch.dict(os.environ, {}, clear=True), \\
-                mock.patch.object(tlg_run, 'window_icon', return_value=None):
-            env = tlg_run.build_env(settings)
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with mock.patch.object(tlg_run, 'window_icon', return_value=None):
+                env = tlg_run.build_env(settings)
         self.assertEqual(env['TLG_READBACKS'], '1')
         self.assertEqual(env['TLG_DEFERRED_READBACK'], '0')
         self.assertEqual(env['TLG_FAST_READ_FAULT'], '0')

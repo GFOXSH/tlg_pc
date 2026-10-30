@@ -44,8 +44,8 @@ TEXT = {
                  '60/livre alteram o eboot 1.03 na memória; ver docs/60fps.md'),
     'advanced': ('Advanced…', 'Avançado…'),
     'advanced_title': ('Advanced GPU readback settings', 'Configurações avançadas de leitura da GPU'),
-    'advanced_hint': ('These options control how the CPU receives data written by the GPU. Keep the defaults unless you are diagnosing a specific scene. The readback mode and switches apply when the game starts; GPU readback batch is saved to tlg.ini and applies immediately. Graphics presets never change these options. Performance figures below are developer test results, not guarantees for every PC or scene.',
-                      'Estas opções controlam como a CPU recebe os dados escritos pela GPU. Mantenha os padrões, a menos que esteja diagnosticando uma cena específica. O modo de leitura e os interruptores valem ao iniciar o jogo; o lote de leitura é salvo em tlg.ini e vale imediatamente. Os presets gráficos nunca alteram estas opções. Os números de desempenho abaixo vêm dos testes do desenvolvedor e não são garantias para todo PC ou cena.'),
+    'advanced_hint': ('These options control how the CPU receives data written by the GPU. Keep the defaults unless you are diagnosing a specific scene. The readback mode and switches apply when the game starts. GPU readback batch is saved to tlg.ini and can also be changed live in the in-game Performance menu. Graphics presets never change these options. Performance figures below are developer test results, not guarantees for every PC or scene.',
+                      'Estas opções controlam como a CPU recebe os dados escritos pela GPU. Mantenha os padrões, a menos que esteja diagnosticando uma cena específica. O modo de leitura e os interruptores valem ao iniciar o jogo. O lote de leitura é salvo em tlg.ini e também pode ser alterado ao vivo no menu Desempenho do jogo. Os presets gráficos nunca alteram estas opções. Os números de desempenho abaixo vêm dos testes do desenvolvedor e não são garantias para todo PC ou cena.'),
     'gpu_readbacks': ('GPU readback mode', 'Modo de leitura da GPU'),
     'gpu_readbacks_hint': ('How CPU reads of GPU-written memory are synchronized.', 'Como as leituras da CPU de memória escrita pela GPU são sincronizadas.'),
     'gpu_readbacks_why': ('The game reads GPU compute results on the CPU. Precise is required to avoid stale results; Relaxed can return old data, and Off disables readback protection. Keep Precise.',
@@ -663,7 +663,7 @@ class Launcher:
             tlg_run.save_settings(self.settings)
 
         mode.bind('<<ComboboxSelected>>', save_mode)
-        mode_note = (self.t('gpu_readbacks_hint') + '\\n' +
+        mode_note = (self.t('gpu_readbacks_hint') + '\n' +
                      self.t('mark_default', value=self.t('readbacks_2')) + ' — ' +
                      self.t('gpu_readbacks_why'))
         ttk.Label(mode_frame, text=mode_note, foreground='#777', wraplength=720,
@@ -682,7 +682,7 @@ class Launcher:
 
         def note(parent, row, column, key, default):
             state = self.t('mark_on' if default else 'mark_off')
-            detail = (self.t(key + '_hint') + '\\n' +
+            detail = (self.t(key + '_hint') + '\n' +
                       self.t('mark_default', value=state) + ' — ' + self.t(key + '_why'))
             ttk.Label(parent, text=detail, foreground='#777', wraplength=350,
                       justify='left').grid(row=row + 1, column=column, sticky='w',
@@ -718,7 +718,7 @@ class Launcher:
         current_batch = tlg_run.read_ini(ini_path).get('readback_batch', '0')
         batch.current(sizes.index(current_batch) if current_batch in sizes else 0)
         batch.grid(row=0, column=0, sticky='w')
-        batch_note = (self.t('readback_batch_hint') + '\\n' +
+        batch_note = (self.t('readback_batch_hint') + '\n' +
                       self.t('mark_default', value=self.t('readback_batch_0')) + ' — ' +
                       self.t('readback_batch_why'))
         ttk.Label(batch_frame, text=batch_note, foreground='#777', wraplength=720,
