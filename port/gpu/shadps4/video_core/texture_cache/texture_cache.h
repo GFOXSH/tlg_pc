@@ -309,7 +309,8 @@ public:
         using FuncReturn = typename std::invoke_result<Func, ImageId, Image&>::type;
         static constexpr bool BOOL_BREAK = std::is_same_v<FuncReturn, bool>;
         ImageIds images;
-        ForEachPage(cpu_addr, size, [this, &images, cpu_addr, size, func](u64 page) {
+        u64 candidates = 0;
+        ForEachPage(cpu_addr, size, [this, &images, &candidates, cpu_addr, size, func](u64 page) {
             const auto it = page_table.find(page);
             if (it == nullptr) {
                 if constexpr (BOOL_BREAK) {
@@ -318,6 +319,7 @@ public:
                     return;
                 }
             }
+            candidates += it->size();
             for (const ImageId image_id : *it) {
                 Image& image = slot_images[image_id];
                 if (image.flags & ImageFlagBits::Picked) {
@@ -342,6 +344,10 @@ public:
         });
         for (const ImageId image_id : images) {
             slot_images[image_id].flags &= ~ImageFlagBits::Picked;
+        }
+        if (TlgStats::enabled) {
+            TlgStats::region_lookups.fetch_add(1, std::memory_order_relaxed);
+            TlgStats::region_candidates.fetch_add(candidates, std::memory_order_relaxed);
         }
     }
 
@@ -414,6 +420,7 @@ private:
     }
 
     void GarbageCollectImages();
+    void ReportMemory();
     void GarbageCollectSamplers();
 
 private:
@@ -429,9 +436,14 @@ private:
     Common::SlotVector<ImageView> slot_image_views;
     tsl::robin_map<u64, Sampler> samplers;
     std::unordered_set<ImageId> download_images;
+    /// tlg: !download_images.empty(), stored under download_images_mutex. ProcessDownloadImages
+    /// runs at every fence and skips both locks when nothing is queued or pending.
+    std::atomic<bool> has_download_images{false};
     u64 total_used_memory = 0;
     u64 gc_evictions = 0, gc_downloads = 0; ///< tlg: pressure report
     std::chrono::steady_clock::time_point gc_report_time{};
+    u64 gc_passes = 0, gc_walked = 0, gc_skip_tiled = 0, gc_skip_unpressured = 0, gc_freed = 0;
+    std::chrono::steady_clock::time_point memory_report_time{};
     u64 trigger_gc_memory = 0;
     u64 pressure_gc_memory = 0;
     u64 critical_gc_memory = 0;
@@ -445,6 +457,18 @@ private:
     const bool readback_linear_images;
     const bool deferred_readbacks = [] {
         const char* value = std::getenv("TLG_DEFERRED_READBACK");
+        return value && value[0] == '1';
+    }();
+    /// TLG_GC_FIX: 1 stops a collection pass at its deletion budget; 2 rotates images it cannot
+    /// currently free to the LRU tail, so they do not starve later candidates. Both on by default.
+    const u32 gc_fix = [] {
+        const char* value = std::getenv("TLG_GC_FIX");
+        return value ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 3u;
+    }();
+    /// tlg: TLG_GC_BATCH_DOWNLOAD=1: the collector records the copies of all GPU-written images
+    /// it evicts and waits for the GPU once, instead of once per image (GarbageCollectImages).
+    const bool gc_batch_downloads = [] {
+        const char* value = std::getenv("TLG_GC_BATCH_DOWNLOAD");
         return value && value[0] == '1';
     }();
     /// tlg: TLG_STALE_READBACK=1 (needs deferred readbacks). A pending copy only blocks CPU

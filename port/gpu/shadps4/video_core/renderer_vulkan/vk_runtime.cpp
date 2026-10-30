@@ -328,8 +328,14 @@ void Runtime::CopyImage(VideoCore::Image* src, VideoCore::Image* dst) {
 
     const u32 base_width = src->info.size.width;
     const u32 base_height = src->info.size.height;
+    // tlg: 3D to 3D copies the depth both images have (an expanded volume is deeper than its
+    // source: copying the destination's depth read past the source image).
     const u32 base_depth =
-        dst->info.type == AmdGpu::ImageType::Color3D ? dst->info.size.depth : src->info.size.depth;
+        dst->info.type == AmdGpu::ImageType::Color3D
+            ? (src->info.type == AmdGpu::ImageType::Color3D
+                   ? std::min(src->info.size.depth, dst->info.size.depth)
+                   : dst->info.size.depth)
+            : src->info.size.depth;
 
     // Match sample count before copying
     SetBackingSamples(dst, dst->info.num_samples, false);
@@ -725,6 +731,7 @@ void Runtime::SetBackingSamples(VideoCore::Image* image, u32 num_samples, bool c
         new_backing = &backing_images.emplace_back();
         new_backing->num_samples = num_samples;
         new_backing->image = VideoCore::UniqueImage{instance.GetDevice(), instance.GetAllocator()};
+        new_backing->image.owner = TlgStats::OwnerTextureCache;
         new_backing->image.Create(new_image_ci);
 
         Vulkan::SetObjectName(instance.GetDevice(), new_backing->image.image,

@@ -21,6 +21,7 @@
 #include "video_core/renderer_vulkan/vk_wait_diagnostics.h"
 #include "video_core/texture_cache/aliasing.h"
 #include "video_core/texture_cache/host_compatibility.h"
+#include <vk_mem_alloc.h>
 #include "video_core/texture_cache/texture_cache.h"
 #include "video_core/texture_cache/tile_manager.h"
 
@@ -40,6 +41,16 @@ TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler&
     std::printf("GPU: deferred image readback %s (64 copies, 64 MiB pending limit)%s\n",
                 deferred_readbacks ? "enabled" : "disabled",
                 stale_readbacks ? "; CPU reads use the previous frame's copy" : "");
+    if (gc_batch_downloads) {
+        std::printf("GPU: collector write-backs batched, one GPU wait per collection "
+                    "(TLG_GC_BATCH_DOWNLOAD)\n");
+    }
+    Common::lru_stop_early = (gc_fix & 1) != 0;
+    if (gc_fix != 3) {
+        std::printf("GPU: collector fixes TLG_GC_FIX=%u, default 3 (1: queue walk stops early, 2: "
+                    "images it cannot free move to the back)\n",
+                    gc_fix);
+    }
 
     u32 max_samplers = instance.GetMaxSamplerAllocationCount();
     trigger_gc_samplers = max_samplers * 3 / 4;
@@ -98,7 +109,7 @@ void TextureCache::RetireReadbacks() {
             }
             runtime.GetStagingPool().FreeDeferred(entry.payload);
         });
-    has_pending_readbacks.store(pending_readbacks.Bytes() != 0, std::memory_order_release);
+    has_pending_readbacks.store(!pending_readbacks.Empty(), std::memory_order_release);
 }
 
 bool TextureCache::ResolveReadbacks(VAddr address, u64 size, bool assume_locks,
@@ -161,6 +172,16 @@ void TextureCache::CancelReadbacks(VAddr address, u64 size) {
 // tlg: every copy is recorded first and the GPU is waited for once. A wait per image (as
 // before) left the GPU mostly idle in God of War III's gameplay, at about 2 FPS.
 void TextureCache::ProcessDownloadImages() {
+    // tlg: this runs at every fence (~1200 compute RELEASE_MEMs a frame). With no image queued
+    // and no copy pending there is nothing to record or retire: copies are only queued here, on
+    // the GPU side, so a false has_pending_readbacks stays false until this thread pushes one.
+    // The readback profile still prints when due.
+    if (!has_download_images.load(std::memory_order_acquire) &&
+        !has_pending_readbacks.load(std::memory_order_acquire) &&
+        !(deferred_readbacks && Vulkan::WaitDiagnostics::Enabled() &&
+          std::chrono::steady_clock::now() - readback_report >= std::chrono::seconds(5))) {
+        return;
+    }
     if (deferred_readbacks) {
         // Upload workers must finish reading RAM before these pages become inaccessible.
         scheduler.WaitHostCopies();
@@ -170,8 +191,7 @@ void TextureCache::ProcessDownloadImages() {
         for (const ImageId image_id : download_images) {
             const auto& image = slot_images[image_id];
             if (False(image.flags & ImageFlagBits::GpuModified)) continue;
-            const u64 size = u64{image.info.pitch} * image.info.size.height *
-                image.info.size.depth * image.info.resources.layers * (image.info.num_bits / 8);
+            const u64 size = ReadbackSize(image.info);
             if (!pending_readbacks.CanFit(size)) {
                 ++readbacks_waited;
                 scheduler.Finish();
@@ -208,6 +228,7 @@ void TextureCache::ProcessDownloadImages() {
             }
         }
         download_images.clear();
+        has_download_images.store(false, std::memory_order_release);
         if (Vulkan::WaitDiagnostics::Enabled()) {
             const auto now = std::chrono::steady_clock::now();
             if (now - readback_report >= std::chrono::seconds(5)) {
@@ -247,6 +268,7 @@ void TextureCache::ProcessDownloadImages() {
         }
     }
     download_images.clear();
+    has_download_images.store(false, std::memory_order_release);
     if (pending.empty()) {
         return;
     }
@@ -259,14 +281,32 @@ void TextureCache::ProcessDownloadImages() {
     }
 }
 
+// A readback that copies nothing, or more than the guest allocation holds, cannot run: the
+// staging pool would build a 0-size Vulkan buffer (the driver refuses it and the assert turns
+// into a dead game) or the write-back would run past the image's memory. Both mean an image
+// was created degenerate upstream, so the first few are logged with the numbers that disagree.
+static void LogSkippedReadback(const Image& image) {
+    static std::atomic<unsigned> logged{0};
+    if (logged.fetch_add(1, std::memory_order_relaxed) >= 8) {
+        return;
+    }
+    const auto& info = image.info;
+    LOG_WARNING(Render_Vulkan,
+                "Skipping readback of image {:#x}: {}x{}x{} pitch {} x {} bits = {} bytes, guest {} bytes",
+                info.guest_address, info.size.width, info.size.height, info.size.depth, info.pitch,
+                info.num_bits, ReadbackSize(info), info.guest_size);
+}
+
 std::optional<TextureCache::PendingDownload> TextureCache::RecordImageDownload(ImageId image_id) {
     Image& image = slot_images[image_id];
     if (False(image.flags & ImageFlagBits::GpuModified)) {
         return std::nullopt;
     }
-    const u32 download_size = image.info.pitch * image.info.size.height * image.info.size.depth *
-                              image.info.resources.layers * (image.info.num_bits / 8);
-    ASSERT(download_size <= image.info.guest_size);
+    const u64 download_size = ReadbackSize(image.info);
+    if (download_size == 0 || download_size > image.info.guest_size) {
+        LogSkippedReadback(image);
+        return std::nullopt;
+    }
     const auto download =
         runtime.GetStagingPool().Request(download_size, MemoryType::HostCached, 16, true);
     const vk::BufferImageCopy image_download = {
@@ -285,7 +325,8 @@ std::optional<TextureCache::PendingDownload> TextureCache::RecordImageDownload(I
         .imageExtent = {image.info.size.width, image.info.size.height, image.info.size.depth},
     };
     runtime.DownloadImage(&image, download.buffer, std::span{&image_download, 1});
-    return PendingDownload{image.info.guest_address, download_size, download};
+    // The guard above leaves download_size <= guest_size, which is a u32.
+    return PendingDownload{image.info.guest_address, u32(download_size), download};
 }
 
 void TextureCache::DownloadImageMemory(ImageId image_id, bool sync) {
@@ -295,9 +336,11 @@ void TextureCache::DownloadImageMemory(ImageId image_id, bool sync) {
     if (False(image.flags & ImageFlagBits::GpuModified)) {
         return;
     }
-    const u32 download_size = image.info.pitch * image.info.size.height * image.info.size.depth *
-                              image.info.resources.layers * (image.info.num_bits / 8);
-    ASSERT(download_size <= image.info.guest_size);
+    const u64 download_size = ReadbackSize(image.info);
+    if (download_size == 0 || download_size > image.info.guest_size) {
+        LogSkippedReadback(image);
+        return;
+    }
     const auto download =
         runtime.GetStagingPool().Request(download_size, MemoryType::HostCached, 16, !sync);
     const vk::BufferImageCopy image_download = {
@@ -467,8 +510,22 @@ void TextureCache::InvalidateAlias(Image& image) {
 void TextureCache::MarkAsMaybeDirty(ImageId image_id, Image& image) {
     if (image.hash == 0) {
         // Initialize hash
+        // tlg: this runs in the write-fault handler with the cache lock held. A page whose
+        // image readback is still pending is read-protected, and the hash faulted into that
+        // readback, which needs the GPU thread: a deadlock while the GPU thread waited for the
+        // draw pipe and the draw pipe for this lock (route pulse, 2026-10-27). The read gives up on
+        // such a fault instead (runtime_fault_recover); the hash stays 0, so the next refresh
+        // uploads the image.
         const u8* addr = std::bit_cast<u8*>(image.info.guest_address);
-        image.hash = XXH3_64bits(addr, image.info.guest_size);
+        sigjmp_buf* outer_recover = runtime_fault_recover;
+        sigjmp_buf recover;
+        if (sigsetjmp(recover, 0)) {
+            runtime_fault_recover = outer_recover;
+        } else {
+            runtime_fault_recover = &recover;
+            image.hash = XXH3_64bits(addr, image.info.guest_size);
+            runtime_fault_recover = outer_recover;
+        }
     }
     image.flags |= ImageFlagBits::MaybeCpuDirty;
     UntrackImage(image_id);
@@ -663,6 +720,19 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
             return {ExpandImage(image_info, cache_image_id), -1, -1};
         }
 
+        // tlg: a 3D texture at the same address that grew only in depth (TLG's 36x36xN RGBA16F
+        // volume grows 441 -> 819 -> 1143 -> 1512 slices): same type, tiling and resources, so
+        // none of the cases above apply. Expand it (the copy keeps the old slices) instead of
+        // stopping the game on the unreachable below (#47, #60, #72, #81, #99, #100, #114).
+        if (image_info.type == AmdGpu::ImageType::Color3D &&
+            image_info.type == cache_image.info.type &&
+            image_info.tile_mode == cache_image.info.tile_mode &&
+            image_info.size.width == cache_image.info.size.width &&
+            image_info.size.height == cache_image.info.size.height &&
+            image_info.size.depth > cache_image.info.size.depth) {
+            return {ExpandImage(image_info, cache_image_id), -1, -1};
+        }
+
         // Size is greater but resources are not, because the tiling mode is different.
         // Likely the address is reused for a image with a different tiling mode.
         if (image_info.tile_mode != cache_image.info.tile_mode) {
@@ -672,122 +742,51 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
             return {merged_image_id, -1, -1};
         }
 
-        // Enhanced debug logging for unreachable case
-        // Calculate expected size based on format and dimensions
-        u64 expected_size =
-            (static_cast<u64>(image_info.size.width) * static_cast<u64>(image_info.size.height) *
-             static_cast<u64>(image_info.size.depth) * static_cast<u64>(image_info.num_bits) / 8);
-        LOG_ERROR(Render_Vulkan,
-                  "Unresolvable image overlap with equal memory address:\n"
-                  "=== OLD IMAGE (cached) ===\n"
-                  "  Address:        {:#x}\n"
-                  "  Size:           {:#x} bytes\n"
-                  "  Format:         {}\n"
-                  "  Type:           {}\n"
-                  "  Width:          {}\n"
-                  "  Height:         {}\n"
-                  "  Depth:          {}\n"
-                  "  Pitch:          {}\n"
-                  "  Mip levels:     {}\n"
-                  "  Array layers:   {}\n"
-                  "  Samples:        {}\n"
-                  "  Tile mode:      {:#x}\n"
-                  "  Block size:     {} bits\n"
-                  "  Is block-comp:  {}\n"
-                  "  Guest size:     {:#x}\n"
-                  "  Last accessed:  tick {}\n"
-                  "  Safe to delete: {}\n"
-                  "  isPow2:         {}\n"
-                  "  Alt tile:       {}\n"
-                  "\n"
-                  "=== NEW IMAGE (requested) ===\n"
-                  "  Address:        {:#x}\n"
-                  "  Size:           {:#x} bytes\n"
-                  "  Format:         {}\n"
-                  "  Type:           {}\n"
-                  "  Width:          {}\n"
-                  "  Height:         {}\n"
-                  "  Depth:          {}\n"
-                  "  Pitch:          {}\n"
-                  "  Mip levels:     {}\n"
-                  "  Array layers:   {}\n"
-                  "  Samples:        {}\n"
-                  "  Tile mode:      {:#x}\n"
-                  "  Block size:     {} bits\n"
-                  "  Is block-comp:  {}\n"
-                  "  Guest size:     {:#x}\n"
-                  "  isPow2:         {}\n"
-                  "  Alt tile:       {}\n"
-                  "\n"
-                  "=== COMPARISON ===\n"
-                  "  Same format:           {}\n"
-                  "  Same type:             {}\n"
-                  "  Same tile mode:        {}\n"
-                  "  Same block size:       {}\n"
-                  "  Same BlockDim:         {}\n"
-                  "  Same pitch:            {}\n"
-                  "  Same pow2:             {}\n"
-                  "  Same alt tile:         {}\n"
-                  "  Old resources <= new:  {} (old: {}, new: {})\n"
-                  "  Old size <= new size:  {}\n"
-                  "  Expected size (calc):  {} bytes\n"
-                  "  Size ratio (new/expected): {:.2f}x\n"
-                  "  Size ratio (new/old):  {:.2f}x\n"
-                  "  Old vs expected diff:  {} bytes ({:+.2f}%)\n"
-                  "  New vs expected diff:  {} bytes ({:+.2f}%)\n"
-                  "  Merged image ID:       {}\n"
-                  "  Binding type:          {}\n"
-                  "  Current tick:          {}\n"
-                  "  Age (ticks since last access): {}",
+        // Size is greater with same format and tile mode, but mip levels are not greater.
+        // This occurs when the guest reuses an address with a different depth/array layout,
+        // giving a different memory footprint despite identical dimensions. The cached image
+        // is superseded and must be replaced. (upstream shadPS4 PR #4135; tlg: only freed when safe, as above)
+        if (image_info.guest_size > cache_image.info.guest_size) {
+            LOG_WARNING(Render_Vulkan,
+                        "Image overlap at {:#x}: replacing cached image "
+                        "(size={:#x}, fmt={}, type={}, {}x{}x{}, {} layers, {} mips, tile={:#x}) "
+                        "with new image "
+                        "(size={:#x}, fmt={}, type={}, {}x{}x{}, {} layers, {} mips, tile={:#x})",
+                        image_info.guest_address,
 
-                  // Old image details
-                  cache_image.info.guest_address, cache_image.info.guest_size,
-                  vk::to_string(cache_image.info.pixel_format),
-                  static_cast<int>(cache_image.info.type), cache_image.info.size.width,
-                  cache_image.info.size.height, cache_image.info.size.depth, cache_image.info.pitch,
-                  cache_image.info.resources.levels, cache_image.info.resources.layers,
-                  cache_image.info.num_samples, static_cast<u32>(cache_image.info.tile_mode),
-                  cache_image.info.num_bits, +cache_image.info.props.is_block,
-                  cache_image.info.guest_size, cache_image.tick_accessed_last, safe_to_delete,
-                  bool(cache_image.info.props.is_pow2), cache_image.info.alt_tile,
+                        // Cached image
+                        cache_image.info.guest_size, vk::to_string(cache_image.info.pixel_format),
+                        static_cast<int>(cache_image.info.type), cache_image.info.size.width,
+                        cache_image.info.size.height, cache_image.info.size.depth,
+                        cache_image.info.resources.layers, cache_image.info.resources.levels,
+                        static_cast<u32>(cache_image.info.tile_mode),
 
-                  // New image details
-                  image_info.guest_address, image_info.guest_size,
-                  vk::to_string(image_info.pixel_format), static_cast<int>(image_info.type),
-                  image_info.size.width, image_info.size.height, image_info.size.depth,
-                  image_info.pitch, image_info.resources.levels, image_info.resources.layers,
-                  image_info.num_samples, static_cast<u32>(image_info.tile_mode),
-                  image_info.num_bits, image_info.props.is_block, image_info.guest_size,
-                  bool(image_info.props.is_pow2), image_info.alt_tile,
+                        // New image
+                        image_info.guest_size, vk::to_string(image_info.pixel_format),
+                        static_cast<int>(image_info.type), image_info.size.width,
+                        image_info.size.height, image_info.size.depth, image_info.resources.layers,
+                        image_info.resources.levels, static_cast<u32>(image_info.tile_mode));
+            if (safe_to_delete) {
+                FreeImage(cache_image_id);
+            }
+            return {merged_image_id, -1, -1};
+        }
 
-                  // Comparison
-                  (image_info.pixel_format == cache_image.info.pixel_format),
-                  (image_info.type == cache_image.info.type),
-                  (image_info.tile_mode == cache_image.info.tile_mode),
-                  (image_info.num_bits == cache_image.info.num_bits),
-                  (image_info.BlockDim() == cache_image.info.BlockDim()),
-                  (image_info.pitch == cache_image.info.pitch),
-                  (image_info.props.is_pow2 == cache_image.info.props.is_pow2),
-                  (image_info.alt_tile == cache_image.info.alt_tile),
-                  (cache_image.info.resources <= image_info.resources),
-                  cache_image.info.resources.levels, image_info.resources.levels,
-                  (cache_image.info.guest_size <= image_info.guest_size), expected_size,
-
-                  // Size ratios
-                  static_cast<double>(image_info.guest_size) / expected_size,
-                  static_cast<double>(image_info.guest_size) / cache_image.info.guest_size,
-
-                  // Difference between actual and expected sizes with percentages
-                  static_cast<s64>(cache_image.info.guest_size) - static_cast<s64>(expected_size),
-                  (static_cast<double>(cache_image.info.guest_size) / expected_size - 1.0) * 100.0,
-
-                  static_cast<s64>(image_info.guest_size) - static_cast<s64>(expected_size),
-                  (static_cast<double>(image_info.guest_size) / expected_size - 1.0) * 100.0,
-
-                  merged_image_id.index, static_cast<int>(binding), scheduler.CurrentTick(),
-                  scheduler.CurrentTick() - cache_image.tick_accessed_last);
-
-        UNREACHABLE_MSG("Encountered unresolvable image overlap with equal memory address.");
+        // The cached image is larger or equal with the same format and tile mode.
+        // Treat it as a compatible view source.
+        LOG_DEBUG(Render_Vulkan,
+                  "Image overlap at {:#x}: using cached image as view source "
+                  "(cached size={:#x}, {} layers vs requested size={:#x}, {} layers)",
+                  image_info.guest_address, cache_image.info.guest_size,
+                  cache_image.info.resources.layers, image_info.guest_size,
+                  image_info.resources.layers);
+        {
+            auto result_id = merged_image_id ? merged_image_id : cache_image_id;
+            const auto& result_image = slot_images[result_id];
+            const bool is_compatible =
+                IsVulkanFormatCompatible(result_image.info.pixel_format, image_info.pixel_format);
+            return {is_compatible ? result_id : ImageId{}, -1, -1};
+        }
     }
 
     // Right overlap, the image requested is a possible subresource of the image from cache.
@@ -1030,6 +1029,7 @@ ImageView& TextureCache::FindTexture(ImageId image_id, const ImageDesc& desc, Vi
             image.info.guest_address != 0) {
             std::unique_lock lk{download_images_mutex};
             download_images.emplace(image_id);
+            has_download_images.store(true, std::memory_order_release);
         }
     }
     if (refresh) {
@@ -1060,6 +1060,7 @@ ImageView& TextureCache::FindRenderTarget(ImageId image_id, const ImageDesc& des
     if (readback_linear_images && (!image.info.props.is_tiled || image.info.size.width <= 8)) {
         std::unique_lock lk{download_images_mutex};
         download_images.emplace(image_id);
+        has_download_images.store(true, std::memory_order_release);
     }
     image.usage.render_target = 1u;
     UpdateImage(image_id);
@@ -1411,7 +1412,14 @@ void TextureCache::GarbageCollectImages() {
             return env ? std::strtoull(env, nullptr, 10) << 20 : 0;
         }();
         if (instance.IsIntegrated() || forced_budget) {
-            const u64 budget = forced_budget ? forced_budget : instance.GetDeviceMemoryBudgetNow();
+            // An integrated GPU keeps following the driver's current budget under a forced one:
+            // the launcher always forces 3500 MB, more than most integrated GPUs are given, and
+            // the collector then aimed above what the driver allowed (#72, #75, #199).
+            u64 budget = forced_budget;
+            if (instance.IsIntegrated()) {
+                const u64 now = instance.GetDeviceMemoryBudgetNow();
+                budget = budget && now ? std::min(budget, now) : (budget ? budget : now);
+            }
             if (budget != 0) {
                 trigger_gc_memory = budget / 10 * 7;
                 pressure_gc_memory = budget / 100 * 85;
@@ -1419,6 +1427,7 @@ void TextureCache::GarbageCollectImages() {
             }
         }
     }
+    ReportMemory();
     if (total_used_memory < trigger_gc_memory) {
         return;
     }
@@ -1427,19 +1436,61 @@ void TextureCache::GarbageCollectImages() {
     bool aggresive = false;
     u64 ticks_to_destroy = 0;
     size_t num_deletions = 0;
+    size_t visited = 0; // tlg: TLG_GC_FIX bit 2
+
+    // tlg: TLG_GC_BATCH_DOWNLOAD=1: selected images are only recorded (their copies too) and
+    // freed by evict(): one GPU wait, then per image, in selection order, the write-back while it
+    // still protects its pages and FreeImage. Their memory counts as freed from the selection on.
+    // Everything runs under `mutex` on the GPU side, so nothing else frees or changes them.
+    struct Eviction {
+        ImageId image_id;
+        std::optional<PendingDownload> download;
+    };
+    boost::container::small_vector<Eviction, 64> evictions;
+    u64 evicting_bytes = 0;
+    u64 evicting_downloads = 0;
+    const auto used_memory = [&] { return total_used_memory - evicting_bytes; };
+    const auto evict = [&] {
+        if (evicting_downloads != 0) {
+            scheduler.Finish();
+        }
+        for (const Eviction& eviction : evictions) {
+            if (const auto& download = eviction.download) {
+                download->staging.Invalidate();
+                Core::Memory::Instance()->TryWriteBacking(
+                    std::bit_cast<u8*>(download->guest_address), download->staging.mapped,
+                    download->size);
+                runtime.GetStagingPool().FreeDeferred(download->staging);
+            }
+            FreeImage(eviction.image_id);
+        }
+        evictions.clear();
+        evicting_bytes = evicting_downloads = 0;
+    };
 
     const auto configure = [&](bool allow_aggressive) {
-        pressured = total_used_memory >= pressure_gc_memory;
-        aggresive = allow_aggressive && total_used_memory >= critical_gc_memory;
+        pressured = used_memory() >= pressure_gc_memory;
+        aggresive = allow_aggressive && used_memory() >= critical_gc_memory;
         ticks_to_destroy = aggresive ? 160 : pressured ? 80 : 16;
         ticks_to_destroy = std::min(ticks_to_destroy, gc_tick);
         num_deletions = aggresive ? 40 : pressured ? 20 : 10;
     };
+    // tlg: TLG_GC_FIX bit 2: an image the pass cannot free no longer counts against its budget
+    // and moves to the back of the queue, so the next pass reaches images it can free. Before,
+    // such images used up the 10-40 slots of every pass and stayed at the front.
+    const bool skip_fix = (gc_fix & 2) != 0;
     const auto clean_up = [&](ImageId image_id) {
-        if (num_deletions == 0) {
+        if (num_deletions == 0 || (skip_fix && ++visited > 256)) {
             return true;
         }
-        --num_deletions;
+        ++gc_walked;
+        if (std::ranges::find(evictions, image_id, &Eviction::image_id) != evictions.end()) {
+            // Selected by the first pass, freed by evict().
+            return false;
+        }
+        if (!skip_fix) {
+            --num_deletions;
+        }
         auto& image = slot_images[image_id];
         ResolveReadbacks(image.info.guest_address, image.info.guest_size, true,
                          ReadbackSource::CacheCleanup);
@@ -1447,27 +1498,57 @@ void TextureCache::GarbageCollectImages() {
         const bool tiled = image.info.IsTiled();
         if (tiled && download) {
             // This is a workaround for now. We can't handle non-linear image downloads.
+            ++gc_skip_tiled;
+            if (skip_fix) {
+                lru_cache.Touch(image.lru_id, gc_tick);
+            }
             return false;
         }
         if (download && !pressured) {
+            ++gc_skip_unpressured;
+            if (skip_fix) {
+                lru_cache.Touch(image.lru_id, gc_tick);
+            }
             return false;
         }
-        if (download) {
-            // tlg: synchronously, while the image still protects its pages. A deferred
-            // write-back landed after FreeImage had unprotected them, over whatever the game
-            // had meanwhile stored there (e.g. its heap after unloading an area).
-            DownloadImageMemory(image_id, true);
-            ++gc_downloads;
+        if (skip_fix) {
+            --num_deletions;
         }
-        ++gc_evictions;
-        FreeImage(image_id);
-        if (total_used_memory < critical_gc_memory) {
+        ++gc_freed;
+        if (gc_batch_downloads) {
+            evictions.push_back(Eviction{image_id, std::nullopt});
+            if (download) {
+                // Recorded now, written back by evict() before FreeImage (see below).
+                evictions.back().download = RecordImageDownload(image_id);
+                if (evictions.back().download) {
+                    evicting_downloads += evictions.back().download->size;
+                }
+                ++gc_downloads;
+            }
+            ++gc_evictions;
+            evicting_bytes += Common::AlignUp(image.info.guest_size, 1024);
+            // Bounds the staging memory held at once.
+            if (evicting_downloads >= 256_MB) {
+                evict();
+            }
+        } else {
+            if (download) {
+                // tlg: synchronously, while the image still protects its pages. A deferred
+                // write-back landed after FreeImage had unprotected them, over whatever the game
+                // had meanwhile stored there (e.g. its heap after unloading an area).
+                DownloadImageMemory(image_id, true);
+                ++gc_downloads;
+            }
+            ++gc_evictions;
+            FreeImage(image_id);
+        }
+        if (used_memory() < critical_gc_memory) {
             if (aggresive) {
                 num_deletions >>= 2;
                 aggresive = false;
                 return false;
             }
-            if (pressured && total_used_memory < pressure_gc_memory) {
+            if (pressured && used_memory() < pressure_gc_memory) {
                 num_deletions >>= 1;
                 pressured = false;
             }
@@ -1477,13 +1558,17 @@ void TextureCache::GarbageCollectImages() {
 
     // Try to remove anything old enough and not high priority.
     configure(false);
+    ++gc_passes;
     lru_cache.ForEachItemBelow(gc_tick - ticks_to_destroy, clean_up);
 
-    if (total_used_memory >= critical_gc_memory) {
+    if (used_memory() >= critical_gc_memory) {
         // If we are still over the critical limit, run an aggressive GC
         configure(true);
+        visited = 0;
+        ++gc_passes;
         lru_cache.ForEachItemBelow(gc_tick - ticks_to_destroy, clean_up);
     }
+    evict();
     // tlg: evictions under memory pressure, at most every 5 s (TLG_FRAME_STATS or not).
     if (pressured || gc_downloads != 0) {
         const auto now = std::chrono::steady_clock::now();
@@ -1498,6 +1583,103 @@ void TextureCache::GarbageCollectImages() {
             gc_evictions = gc_downloads = 0;
         }
     }
+}
+
+// tlg: with TLG_FRAME_STATS, every 5 s: what fills video memory, by owner, and the texture cache
+// images left from before the last stage load (issues #20, #104: long sessions slow down and an
+// 8 GB card filled up). The collector compares the driver's figure (all of it) with its budget,
+// but only frees texture cache images.
+void TextureCache::ReportMemory() {
+    const auto now = std::chrono::steady_clock::now();
+    if (!TlgStats::enabled || now - memory_report_time < std::chrono::seconds(5)) {
+        return;
+    }
+    memory_report_time = now;
+    const auto& props = instance.GetMemoryProperties();
+    VmaBudget budgets[VK_MAX_MEMORY_HEAPS]{};
+    vmaGetHeapBudgets(instance.GetAllocator(), budgets);
+    u64 blocks = 0, allocated = 0;
+    for (u32 i = 0; i < props.memoryHeapCount; ++i) {
+        if (props.memoryHeaps[i].flags & vk::MemoryHeapFlagBits::eDeviceLocal) {
+            blocks += budgets[i].statistics.blockBytes;
+            allocated += budgets[i].statistics.allocationBytes;
+        }
+    }
+    const u64 driver = instance.CanReportMemoryUsage() ? instance.GetDeviceMemoryUsage() : 0;
+    const u64 arenas = TlgStats::arena_resident_bytes.load(std::memory_order_relaxed);
+    s64 image_mib[TlgStats::ImageOwners], image_count[TlgStats::ImageOwners];
+    s64 all_images = 0;
+    for (u32 i = 0; i < TlgStats::ImageOwners; ++i) {
+        const s64 bytes = TlgStats::image_bytes[i].load(std::memory_order_relaxed);
+        all_images += bytes;
+        image_mib[i] = bytes >> 20;
+        image_count[i] = TlgStats::image_count[i].load(std::memory_order_relaxed);
+    }
+    struct Group {
+        u64 count = 0, bytes = 0;
+        void Add(u64 size) {
+            ++count;
+            bytes += size;
+        }
+    };
+    Group all, written, unevictable, tracked;
+    u64 passes, walked, skip_tiled, skip_unpressured, freed;
+    {
+        std::scoped_lock lock{mutex};
+        passes = std::exchange(gc_passes, 0);
+        walked = std::exchange(gc_walked, 0);
+        skip_tiled = std::exchange(gc_skip_tiled, 0);
+        skip_unpressured = std::exchange(gc_skip_unpressured, 0);
+        freed = std::exchange(gc_freed, 0);
+        const auto host_bytes = [](const Image& image) {
+            u64 bytes = 0;
+            for (const auto& backing : image.backing_images) {
+                bytes += backing.image.size_bytes;
+            }
+            return bytes;
+        };
+        for (Image& image : slot_images) {
+            const u64 bytes = host_bytes(image);
+            all.Add(bytes);
+            if (image.SafeToDownload()) {
+                written.Add(bytes);
+                if (image.info.IsTiled()) {
+                    unevictable.Add(bytes);
+                }
+            }
+            if (image.IsTracked()) {
+                tracked.Add(bytes);
+            }
+        }
+    }
+    const auto mib = [](u64 bytes) { return static_cast<unsigned long long>(bytes >> 20); };
+    const auto num = [](u64 count) { return static_cast<unsigned long long>(count); };
+    std::printf("Memory stats: driver %llu MiB (collector %llu/%llu/%llu); VMA blocks %llu MiB, "
+                "%llu allocated; images MiB (count): texture cache %lld (%lld), scene targets "
+                "%lld (%lld), upscaler and host passes %lld (%lld), texture pack %lld (%lld); "
+                "buffer arenas %llu MiB; other VMA %lld MiB; outside VMA %lld MiB\n",
+                mib(driver), mib(trigger_gc_memory), mib(pressure_gc_memory),
+                mib(critical_gc_memory), mib(blocks), mib(allocated),
+                (long long)image_mib[TlgStats::OwnerTextureCache],
+                (long long)image_count[TlgStats::OwnerTextureCache],
+                (long long)image_mib[TlgStats::OwnerScene],
+                (long long)image_count[TlgStats::OwnerScene],
+                (long long)image_mib[TlgStats::OwnerHost], (long long)image_count[TlgStats::OwnerHost],
+                (long long)image_mib[TlgStats::OwnerPack], (long long)image_count[TlgStats::OwnerPack],
+                mib(arenas), (long long)((s64(allocated) - all_images) >> 20),
+                (long long)((s64(driver) - s64(blocks) - s64(arenas)) >> 20));
+    std::printf("Texture cache images: %llu (%llu MiB); GPU-written %llu (%llu MiB), of those tiled "
+                "%llu (%llu MiB, never evicted); tracked %llu (%llu MiB)\n",
+                num(all.count), mib(all.bytes), num(written.count), mib(written.bytes),
+                num(unevictable.count), mib(unevictable.bytes), num(tracked.count), mib(tracked.bytes));
+    const u64 lookups = TlgStats::region_lookups.exchange(0, std::memory_order_relaxed);
+    const u64 candidates = TlgStats::region_candidates.exchange(0, std::memory_order_relaxed);
+    std::printf("Collector (5 s): %llu passes, %llu images walked, %llu skipped (tiled GPU-written), "
+                "%llu skipped (write-back waits for pressure), %llu freed; image lookups %llu, "
+                "images looked at %llu (%.1f per lookup)\n",
+                num(passes), num(walked), num(skip_tiled), num(skip_unpressured), num(freed),
+                num(lookups), num(candidates),
+                lookups ? static_cast<double>(candidates) / static_cast<double>(lookups) : 0.0);
 }
 
 void TextureCache::GarbageCollectSamplers() {
@@ -1600,6 +1782,7 @@ void TextureCache::DeleteImage(ImageId image_id) {
         std::unique_lock lk{download_images_mutex};
         if (download_images.contains(image_id)) {
             download_images.erase(image_id);
+            has_download_images.store(!download_images.empty(), std::memory_order_release);
         }
     }
 
