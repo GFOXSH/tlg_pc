@@ -124,9 +124,6 @@ void UniqueImage::Create(const vk::ImageCreateInfo& image_ci) {
                vk::to_string(vk::Result{result}));
     image = vk::Image{unsafe_image};
     size_bytes = alloc_info.size;
-    if (pool) {
-        owner = TlgStats::OwnerPack;
-    }
     TlgStats::image_bytes[owner].fetch_add(size_bytes, std::memory_order_relaxed);
     TlgStats::image_count[owner].fetch_add(1, std::memory_order_relaxed);
 }

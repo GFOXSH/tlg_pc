@@ -466,8 +466,7 @@ void PerformanceTab() {
                   TL("When the game reads GPU-written memory, also copy back the other GPU-written data around it. "
                      "Off is fastest (2-5 FPS more in tests); 64 MB is not recommended.",
                      "Quando o jogo lê memória escrita pela GPU, copia também os outros dados escritos pela GPU ao redor. "
-                     "Desligado é o mais rápido (2-5 FPS a mais nos testes); 64 MB não é recomendado."),
-                  d.readback_batch);
+                     "Desligado é o mais rápido (2-5 FPS a mais nos testes); 64 MB não é recomendado."));
         CheckRow(TL("Texture cleanup after loads", "Limpeza de texturas após carregamentos"), s.texture_cleanup,
                  TL("After each stage or checkpoint load, frees the textures of earlier stages that the new one does "
                     "not use. Without it they stay in video memory until it runs short. In one test it kept 69 FPS "
@@ -507,7 +506,7 @@ void OverlayTab() {
             }
         }
         ImGui::TableNextColumn();
-        ImGui::TextDisabled(TL("Preview", "Prévia"));
+        ImGui::TextDisabled("%s", TL("Preview", "Prévia"));
         ImGui::BeginChild("##preview", ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
         ImGui::SetWindowFontScale(s.overlay_scale / 100.0f);
         const std::string text = OverlayText();
@@ -538,7 +537,7 @@ void OverlayTab() {
         if (total) {
             std::snprintf(text, sizeof(text), TL("loading %u%%", "carregando %u%%"), u32(u64(background_done) * 100 / total));
         } else {
-            std::snprintf(text, sizeof(text), TL("ready", "pronto"));
+            std::snprintf(text, sizeof(text), "%s", TL("ready", "pronto"));
         }
         InfoRow(TL("Shader cache", "Cache de shaders"), text);
         ImGui::EndTable();

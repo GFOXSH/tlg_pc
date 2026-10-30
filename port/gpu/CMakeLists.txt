@@ -15,9 +15,10 @@ add_compile_options(-fno-omit-frame-pointer)
 # transitively by libstdc++. libc++/MinGW do not guarantee that. Force-include a
 # project-owned compatibility header instead of patching SDK source files.
 if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    # Keep the option and its operand grouped. CMake de-duplicates compile options;
+    # splitting two -include pairs leaves the second header as a stray input file.
     add_compile_options(
-        "$<$<COMPILE_LANGUAGE:CXX>:-include>"
-        "$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_CURRENT_SOURCE_DIR}/shim/tlg_stdlib_compat.h>")
+        "$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/shim/tlg_stdlib_compat.h>")
 endif()
 
 # tlg: link-time optimization (TLG_LTO, default on) and profile-guided optimization
@@ -259,7 +260,8 @@ if (WIN32)
     # Guest code is entered with the System V ABI; NOMINMAX/WIN32_LEAN_AND_MEAN keep
     # <windows.h> out of the way of std::min/max and the Vulkan/SDL headers.
     target_compile_definitions(tlggpu PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
-    target_compile_options(tlggpu PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/shim/tlg_win_compat.h)
+    target_compile_options(tlggpu PRIVATE
+        "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/shim/tlg_win_compat.h")
     target_link_libraries(tlggpu PUBLIC Vulkan::Vulkan ws2_32 bcrypt ntdll synchronization winmm pdh)
 else()
     target_link_libraries(tlggpu PUBLIC PkgConfig::X11)
