@@ -517,6 +517,26 @@ void VideoOutDriver::Flip(const Request& req) {
                         TlgStats::tick_wait_ns.exchange(0) / (window * 1e7),
                         frames ? double(TlgStats::reduced_draws.exchange(0)) / frames : 0.0,
                         frames ? double(TlgStats::scene_draws.exchange(0)) / frames : 0.0);
+            // Readback cost per second, comparable between builds: faults on GPU-tracked pages and
+            // their handler time, waits for image readbacks, protection changes and their time.
+            {
+                static u64 prev[7];
+                const u64 cur[7] = {TlgStats::read_faults.load(), TlgStats::t_read_faults.load(),
+                                    TlgStats::t_write_faults.load(), TlgStats::t_readback_wait.load(),
+                                    TlgStats::protect_calls.load(), TlgStats::protect_pages.load(),
+                                    TlgStats::t_protect.load()};
+                double rate[7];
+                for (int i = 0; i < 7; ++i) {
+                    // A counter reset elsewhere counts from zero again.
+                    rate[i] = (cur[i] >= prev[i] ? cur[i] - prev[i] : cur[i]) / window;
+                    prev[i] = cur[i];
+                }
+                std::printf("Readback stats (per s): %.0f read faults %.1f ms, %.0f write faults "
+                            "%.1f ms, image readback wait %.1f ms; %.0f protect calls (%.0f pages) "
+                            "%.1f ms\n",
+                            rate[0], rate[1] / 1e6, faults / window, rate[2] / 1e6, rate[3] / 1e6,
+                            rate[4], rate[5], rate[6] / 1e6);
+            }
             presenter->GetRasterizer().GetPipelineCache().ReportCompilerStats();
             Vulkan::WaitDiagnostics::Report();
             // Frame pacing: spread of the guest flip intervals (judder that the mean hides).
@@ -665,13 +685,19 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
     // and the uncapped presets keep their fixed limit.
     // tlg: with the 480 Hz vblank (TLG_FPS=unlocked) a menu limit still applies; "Unlimited"
     // falls back to the preset's limit (the display refresh, at most 120).
+    // tlg: with a vblank above the engine rate (240 Hz in the 30/60 FPS modes) "Unlimited" is
+    // the engine rate: a late frame shows ~4 ms late instead of a whole 60 Hz vblank later.
     const bool fixed_limit = std::getenv("TLG_FPS_LIMIT") != nullptr;
-    const bool fast_vblank = EmulatorSettings.GetVblankFrequency() == 480;
+    const u32 vblank_hz = EmulatorSettings.GetVblankFrequency();
+    const bool fast_vblank = vblank_hz == 480;
     const auto current_limit = [&] {
         const auto& s = TlgSettings::Get();
         if (fixed_limit) return EmulatorSettings.GetFrameLimit();
         const u32 limit = u32(TlgGraphics::PresentLimit(s.fps_limit, s.applied_engine_fps));
-        return limit || !fast_vblank ? limit : EmulatorSettings.GetFrameLimit();
+        if (limit) return limit;
+        if (fast_vblank) return EmulatorSettings.GetFrameLimit();
+        const u32 engine_fps = u32(s.applied_engine_fps.load());
+        return vblank_hz > engine_fps ? engine_fps : 0u;
     };
     u32 frame_limit = current_limit();
     auto frame_period = frame_limit ? std::chrono::nanoseconds(1000000000 / frame_limit)

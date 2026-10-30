@@ -818,20 +818,24 @@ void *runtime_low_map(size_t size, int prot) {
  * 262144 with TLG_ASYNC_FENCES=1: wait for guest copies at fences again,
  * 524288 small guest copies batched for the copy threads instead of the recording thread,
  * 1073741824 the lock-free UpdateImage path for clean, tracked images. */
-/* Bits 32 and up: the draw pipeline and related GPU thread work (gpu/shim/tlg_toggles.h). */
+/* Bits 32 and up: the draw pipeline and related GPU thread work (gpu/shim/tlg_toggles.h).
+ * An optional second number in the file is a second mask (TlgToggle::Disabled2): 1 shader code
+ * read through the backing view. */
 uint64_t runtime_disabled_optimizations;
+uint64_t runtime_disabled_optimizations2;
 /* Speculative readers of guest memory (GPU draw-preparation workers) register a recovery
  * point: a fault on that thread jumps back to it instead of terminating (probe.c). */
 __thread sigjmp_buf *runtime_fault_recover;
 static void *toggle_watcher(void *path) {
-    for (unsigned long long last=ULLONG_MAX;;) {
+    for (unsigned long long last=ULLONG_MAX, last2=ULLONG_MAX;;) {
         FILE *f=fopen(path,"r");
-        unsigned long long value=0;
-        if (f) { if (fscanf(f,"%llu",&value)!=1) value=0; fclose(f); }
-        if (value!=last) {
+        unsigned long long value=0, value2=0;
+        if (f) { if (fscanf(f,"%llu %llu",&value,&value2)<1) value=0; fclose(f); }
+        if (value!=last || value2!=last2) {
             __atomic_store_n(&runtime_disabled_optimizations,(uint64_t)value,__ATOMIC_RELEASE);
-            printf("Runtime: disabled optimizations mask=%llu\n",value);
-            last=value;
+            __atomic_store_n(&runtime_disabled_optimizations2,(uint64_t)value2,__ATOMIC_RELEASE);
+            printf("Runtime: disabled optimizations mask=%llu %llu\n",value,value2);
+            last=value; last2=value2;
         }
 #ifdef _WIN32
         compat_sleep_ns(250000000);
@@ -869,7 +873,7 @@ int runtime_memory_write_backing(uintptr_t address, const void *data, uint64_t s
  * backing (the caller then reads the guest address directly). GPU-internal threads use it so a
  * read of a page protected for readback (TLG_READBACKS=2) cannot fault into a readback that waits
  * for the same thread (the Vulkan recorder). */
-int runtime_memory_read_backing(uintptr_t address, void *data, uint64_t size) {
+static int read_backing_locked(uintptr_t address, void *data, uint64_t size) {
     read_lock();
     int ok=1;
     for (uintptr_t at=address, end=address+size; at<end && ok;) {
@@ -884,7 +888,7 @@ int runtime_memory_read_backing(uintptr_t address, void *data, uint64_t size) {
 }
 /* Per-thread cache of recently found regions for the GPU's per-draw queries:
  * entries hold for as long as the table generation they were read at. */
-typedef struct { uint64_t generation; uintptr_t start, end; int kind; } CachedRegion;
+typedef struct { uint64_t generation; uintptr_t start, end; uint64_t phys; int kind; } CachedRegion;
 static __thread CachedRegion region_cache[8];
 static __thread unsigned region_cache_next;
 static const CachedRegion *cached_region(uintptr_t address) {
@@ -900,7 +904,21 @@ static const CachedRegion *cached_region(uintptr_t address) {
 static void cache_region(size_t i) {
     uint64_t generation=__atomic_load_n(&table_generation,__ATOMIC_ACQUIRE);
     if (i==vma_count || (generation & 1)) return;
-    region_cache[region_cache_next++ % 8]=(CachedRegion){generation,vmas[i].start,vmas[i].end,vmas[i].kind};
+    region_cache[region_cache_next++ % 8]=(CachedRegion){generation,vmas[i].start,vmas[i].end,vmas[i].phys,vmas[i].kind};
+}
+/* Copy from the backing view. The GPU thread reads shader headers here per draw: from a cached
+ * region the copy needs no lock or table search, and it only counts if no writer started meanwhile. */
+int runtime_memory_read_backing(uintptr_t address, void *data, uint64_t size) {
+    const CachedRegion *c=(runtime_disabled_optimizations & 1) ? NULL : cached_region(address);
+    if (c && c->kind!=KIND_RESERVED && size<=c->end-address) {
+        uint64_t generation=c->generation;
+        memcpy(data,backing_base+c->phys+(address-c->start),size);
+        if (__atomic_load_n(&table_generation,__ATOMIC_ACQUIRE)==generation) return 1;
+    }
+    read_lock();
+    { size_t i=vma_index(address); if (i<vma_count && vmas[i].start<=address) cache_region(i); }
+    read_unlock();
+    return read_backing_locked(address,data,size);
 }
 /* Mapped length from address, up to size, across adjacent mappings. */
 uint64_t runtime_memory_clamp(uintptr_t address, uint64_t size) {

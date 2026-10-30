@@ -5,6 +5,7 @@
 
 #include "tlg_copy.h"
 
+#include <chrono>
 #include <deque>
 #include <boost/container/small_vector.hpp>
 
@@ -106,6 +107,11 @@ public:
     /// Return true when a region is modified from the GPU
     [[nodiscard]] bool IsRegionGpuModified(VAddr addr, size_t size);
 
+    /// True when GPU writes to these exact bytes have not been downloaded yet.
+    [[nodiscard]] bool HasPendingGpuWrite(VAddr addr, size_t size) const {
+        return gpu_modified_ranges.Intersects(addr, size);
+    }
+
     /// Processes the fault buffer.
     void ProcessFaultBuffer();
 
@@ -134,6 +140,9 @@ private:
     void EnsureResident(const Buffer* arena, u64 first_block, u64 last_block);
 
     void DownloadMemory(const Buffer* arena, VAddr device_addr, u64 size);
+
+    /// Opt-in telemetry for coherent buffer readback batching.
+    void ReportReadbackStats();
 
     bool SynchronizeMemory(const Buffer* arena, VAddr device_addr, u32 size, bool is_written,
                            bool is_texel_buffer);
@@ -166,6 +175,91 @@ private:
     StreamBuffer stream_buffer;
     Buffer gds_buffer;
     RangeSet gpu_modified_ranges;
+
+    // Disabled unless a launch profile opts in. When enabled, exact GPU-dirty islands in the
+    // current sparse arena share one completion if their combined staging footprint fits.
+    u64 readback_batch_limit{};
+    bool readback_batch_forced{}; ///< TLG_BUFFER_READBACK_BATCH_MB overrides the setting
+    bool readback_stats_enabled{};
+    std::atomic<u64> readback_report_ns{};
+    std::atomic<u64> readback_requests{};
+    std::atomic<u64> readback_empty_requests{};
+    std::atomic<u64> readback_full_arena_batches{};
+    std::atomic<u64> readback_limit_fallbacks{};
+    std::atomic<u64> readback_gpu_completions{};
+    std::atomic<u64> readback_copy_ranges{};
+    std::atomic<u64> readback_copy_bytes{};
+    std::atomic<u64> readback_staging_bytes{};
+    // Readback waits (stats only): per completion whether the last GPU write to its data had
+    // finished, was submitted or still recording, and the time spent waiting.
+    std::atomic<u64> readback_writes_done{};
+    std::atomic<u64> readback_writes_submitted{};
+    std::atomic<u64> readback_writes_recording{};
+    std::atomic<u64> readback_writes_unknown{};
+    std::atomic<u64> readback_finish_ns{};
+    std::atomic<u64> readback_side_copies{};
+    std::atomic<u64> readback_side_ns{};
+
+    // tlg: hot readbacks (from SotC opt11 by @Oussama268; TLG_RB_HOT=0 turns them off): the
+    // windows read back in the last 2 s. A readback that syncs anyway brings along their GPU
+    // data in the same arena, so the reads that follow find it on the CPU.
+    struct HotReadback {
+        VAddr addr;
+        u64 size;
+        std::chrono::steady_clock::time_point last_request;
+    };
+    static constexpr size_t MaxHotReadbacks = 64;
+    static constexpr u64 MaxHotBytes = 64_KB; ///< larger regions wait for their own readback
+    static constexpr auto HotReadbackLifetime = std::chrono::seconds{2};
+    bool hot_readbacks_enabled{true};
+    boost::container::small_vector<HotReadback, MaxHotReadbacks> hot_readbacks;
+    std::atomic<u64> readback_hot_regions{};
+    std::atomic<u64> readback_hot_bytes{};
+    std::atomic<u64> readback_hot_skipped{};
+    std::atomic<u64> readback_stale_bytes{};
+    std::atomic<u64> readback_false_share_skips{};
+
+    /// tlg: one bit per 4 KiB guest page that really holds not-yet-downloaded GPU buffer
+    /// bytes. The page tracker's GPU bits cover whole pages and whole download windows, so
+    /// they stay set on pages with nothing left to download; a guest write fault on such a
+    /// page can skip the round trip through the GPU thread (default off, no measured gain;
+    /// TLG_RB_FALSESHARE=1 enables).
+    /// Kept conservative: set (whole pages, before the tracker flags them) at every written
+    /// binding, cleared only for pages fully inside a downloaded or dropped range.
+    static constexpr u64 ExactPageShift = 12;
+    static constexpr u64 ExactPageWords = (u64{1} << (ADDRESS_SPACE_BITS - ExactPageShift)) / 64;
+    std::unique_ptr<std::atomic<u64>[]> exact_write_pages;
+    void SetExactWritePages(VAddr addr, u64 size);
+    void ClearExactWritePagesInner(VAddr addr, u64 size);
+    [[nodiscard]] bool AnyExactWritePage(VAddr addr, u64 size) const;
+
+    /// tlg: copies GPU data whose last write has finished on the second queue, without
+    /// submitting or waiting for the open GPU queue. False when there is no second queue.
+    bool CopyOnReadbackQueue(const Buffer* arena, const Buffer* dst,
+                             std::span<const vk::BufferCopy> copies, u64 last_write);
+    vk::UniqueCommandPool readback_pool;
+    vk::CommandBuffer readback_cmdbuf;
+    vk::UniqueFence readback_fence;
+
+    /// tlg: one in-flight background readback. After a fault is served, the arena's remaining
+    /// dirty islands whose producers are already submitted go out as one fire-and-forget copy
+    /// on the second queue (the GPU waits for the producer tick, the CPU does not); the bytes
+    /// land at a later fault once the fence shows signaled, so those faults never block.
+    /// TLG_RB_ASYNC=0 turns it off.
+    void ResolveAsyncReadback(const Buffer* arena);
+    void IssueAsyncReadback(const Buffer* arena);
+    static constexpr u64 AsyncStagingBytes = 16_MB;
+    struct AsyncCopy {
+        VAddr addr;
+        u64 size;
+        u64 staging_offset;
+    };
+    vk::CommandBuffer async_cmdbuf;
+    vk::UniqueFence async_fence;
+    std::unique_ptr<Buffer> async_staging;
+    const Buffer* async_arena{};
+    std::vector<AsyncCopy> async_copies;
+    bool async_active{};
 
     std::unique_ptr<FaultManager> fault_manager;
     std::unique_ptr<Buffer> bda_pagetable_buffer;

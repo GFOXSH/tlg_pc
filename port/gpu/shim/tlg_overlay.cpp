@@ -439,8 +439,8 @@ void ImageTab() {
 void PerformanceTab() {
     namespace G = TlgGraphics;
     auto& s = TlgSettings::Get();
-    // tlg: GoW3's render-resolution and engine-frame-rate patches and the readback shortcuts are not
-    // offered: they do not apply to TLG, and the readback ones crash it (it needs precise readbacks).
+    // tlg: render-resolution and engine-frame-rate patch controls are not offered here; they do not
+    // apply to TLG. GPU readback batching below keeps precise readback semantics.
     ImGui::SeparatorText(TL("Live", "Em tempo real"));
     if (BeginRows("##live")) {
         static const char* const fps_labels[] = {"30", "60", "120", "240", TL("Unlimited", "Sem limite")};
@@ -459,6 +459,15 @@ void PerformanceTab() {
         static const char* const queued_labels[] = {TL("1 (lowest latency)", "1 (menor atraso)"), "2", TL("Unlimited", "Sem limite")};
         ChoiceRow(TL("Frames queued", "Quadros na fila"), s.frames_queued, queued_labels, G::FramesQueued.data(),
                   int(G::FramesQueued.size()), TL("More frames queued: steadier FPS, slower response to input.", "Mais quadros na fila: FPS mais estável, resposta mais lenta."));
+        static const char* const batch_labels[] = {TL("Off (recommended)", "Desligado (recomendado)"), "16 MB",
+                                                   TL("64 MB (not recommended)", "64 MB (não recomendado)")};
+        ChoiceRow(TL("GPU readback batch", "Lote de leituras da GPU"), s.readback_batch, batch_labels,
+                  G::ReadbackBatchMb.data(), int(G::ReadbackBatchMb.size()),
+                  TL("When the game reads GPU-written memory, also copy back the other GPU-written data around it. "
+                     "Off is fastest (2-5 FPS more in tests); 64 MB is not recommended.",
+                     "Quando o jogo lê memória escrita pela GPU, copia também os outros dados escritos pela GPU ao redor. "
+                     "Desligado é o mais rápido (2-5 FPS a mais nos testes); 64 MB não é recomendado."),
+                  d.readback_batch);
         CheckRow(TL("Compile new shaders in the background", "Compilar shaders novos em segundo plano"), s.async_shaders,
                  TL("Fewer stutters in new areas; an object or effect may appear a moment later.", "Menos engasgos em áreas novas; um objeto ou efeito pode aparecer um instante depois."));
         ImGui::EndTable();

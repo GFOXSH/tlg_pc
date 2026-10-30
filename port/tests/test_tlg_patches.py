@@ -13,6 +13,9 @@ def text_with(names, expected=True):
         for address, original, _, _ in t.PATCHES[name]:
             offset = address - t.GHIDRA_BASE
             text[offset:offset + len(original)] = original if expected else b'\xcc' * len(original)
+    offset = t.GARLIC_SIZE - t.GHIDRA_BASE
+    text[offset:offset + len(t.GARLIC_SIZE_EXPECTED)] = (t.GARLIC_SIZE_EXPECTED if expected else
+                                                        b'\\xcc' * len(t.GARLIC_SIZE_EXPECTED))
     return text
 
 
@@ -47,8 +50,8 @@ class FrameRatePatchTests(unittest.TestCase):
         # #40: a SELF dump of 1.03 has another sha256 than the plain dump, but the same code.
         applied, lines, blob = self.prepare(self_dump(text_with(t.MODES['60'])), '60')
         self.assertEqual(applied, '60')
-        self.assertIn('Frame rate: 60 FPS mode, 5 patch writes', lines)
-        self.assertEqual(struct.unpack_from('<8sQQ', blob), (b'G3PATCH2', 0, 5))
+        self.assertIn('Frame rate: 60 FPS mode, 6 patch writes', lines)
+        self.assertEqual(struct.unpack_from('<8sQQ', blob), (b'G3PATCH2', 0, 6))
 
     def test_self_dump_of_another_build_stays_at_30(self):
         applied, lines, blob = self.prepare(self_dump(text_with(t.MODES['unlocked'], expected=False)), 'unlocked')
@@ -65,6 +68,21 @@ class FrameRatePatchTests(unittest.TestCase):
         applied, lines, _ = self.prepare(plain_elf(text_with(t.MODES['60'])), '60')
         self.assertEqual(applied, '30')
         self.assertTrue(any('is not v1.03' in line for line in lines))
+
+    def test_gpu_heap_applies_even_at_30_and_is_checked(self):
+        applied, lines, blob = self.prepare(plain_elf(text_with([])), '30')
+        self.assertEqual(applied, '30')
+        self.assertEqual(struct.unpack_from('<8sQQ', blob), (b'G3PATCH2', 0, 1))
+        offset, size = struct.unpack_from('<QQ', blob, 24)
+        self.assertEqual(offset, t.GARLIC_SIZE - t.GHIDRA_BASE)
+        self.assertEqual(blob[40:40 + size],
+                         bytes.fromhex('41bf') + struct.pack('<I', (2816 + t.GARLIC_EXTRA_MB) << 20))
+
+    def test_30_without_a_matching_heap_instruction_stays_unpatched(self):
+        applied, lines, blob = self.prepare(plain_elf(text_with([], expected=False)), '30')
+        self.assertEqual(applied, '30')
+        self.assertEqual(struct.unpack_from('<8sQQ', blob), (b'G3PATCH2', 0, 0))
+        self.assertTrue(any(line.startswith('GPU heap:') for line in lines))
 
     def test_30_writes_an_empty_patch_file(self):
         applied, lines, blob = self.prepare(b'', '30')

@@ -599,20 +599,7 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
     }
     std::array<u16, AmdGpu::RegDirty::NumBlocks> blocks;
     u32 num_blocks = 0;
-#ifdef __GLIBCXX__
-    for (size_t block = dirty.blocks._Find_first(); block < dirty.blocks.size();
-         block = dirty.blocks._Find_next(block)) {
-        blocks[num_blocks++] = static_cast<u16>(block);
-    }
-#else
-    if (dirty.blocks.any()) {
-        for (size_t block = 0; block < dirty.blocks.size(); ++block) {
-            if (dirty.blocks.test(block)) {
-                blocks[num_blocks++] = static_cast<u16>(block);
-            }
-        }
-    }
-#endif
+    dirty.ForEach([&](u32 block) { blocks[num_blocks++] = static_cast<u16>(block); });
     const auto stages =
         pipeline ? pipeline->GetStages() : std::span<const Shader::Info* const>{};
     // Constants: copied here into the ring, the recording thread only binds them.
@@ -1454,6 +1441,21 @@ u64 Rasterizer::Flush() {
 void Rasterizer::Finish() {
     DrainDrawPipe();
     scheduler.Finish();
+}
+
+void Rasterizer::FlushForFence(TlgStats::FenceSite site) {
+    // The guest sees the fence as soon as it is written, long before the GPU has run the work:
+    // a read of its results faulted into a readback that first had to submit the open command
+    // buffer and then wait for all of it (~4.5 ms, ~65/s in TLG). Submitted here, the GPU is
+    // already running it by then. Runs in order with the draws (stage B or stage A).
+    // EOS, label WRITE_DATA and compute RELEASE_MEM signal the guest the same way.
+    if (TlgToggle::Disabled2(TlgToggle::FenceFlush) ||
+        (site != TlgStats::FenceEop && TlgToggle::Disabled2(TlgToggle::FenceFlushMore)) ||
+        runtime.LastArenaWriteTick() != scheduler.CurrentTick()) {
+        return;
+    }
+    scheduler.Flush();
+    TlgStats::fence_flushes[site].fetch_add(1, std::memory_order_relaxed);
 }
 
 void Rasterizer::OnSubmit() {

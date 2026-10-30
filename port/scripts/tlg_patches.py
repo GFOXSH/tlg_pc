@@ -23,6 +23,11 @@ SELF_MAGIC = b'O\x15=\x1d'
 TEXT_FILE_OFFSET = 0x4000      # PT_LOAD 0 (R E): file offset of vaddr 0
 TEXT_SIZE = 0x16b2d5c
 GHIDRA_BASE = 0x1000000
+# Game GPU heap (Gomalloc), shared by render targets and stage allocations. 4064 MiB leaves
+# 32 MiB below the 4 GiB cap for allocator rounding.
+GARLIC_SIZE = 0x1dd3a46
+GARLIC_SIZE_EXPECTED = bytes.fromhex('41bf000000b0')
+GARLIC_EXTRA_MB = 1248
 
 
 def f32(value):
@@ -120,6 +125,17 @@ def mode_writes(eboot, names):
     return writes
 
 
+def garlic_writes(eboot):
+    """A checked 4064 MiB game GPU heap patch for every resolution and FPS mode."""
+    offset = GARLIC_SIZE - GHIDRA_BASE
+    found = eboot[TEXT_FILE_OFFSET + offset:TEXT_FILE_OFFSET + offset + len(GARLIC_SIZE_EXPECTED)]
+    if found != GARLIC_SIZE_EXPECTED:
+        raise ValueError(f'GPU heap: {GARLIC_SIZE:#x} has {found.hex()}, expected {GARLIC_SIZE_EXPECTED.hex()}')
+    size_mb = 2816 + GARLIC_EXTRA_MB
+    data = GARLIC_SIZE_EXPECTED[:2] + struct.pack('<I', size_mb << 20)
+    return [(offset, data, f'GPU heap {2816} -> {size_mb} MB')]
+
+
 def write_patch_file(path, writes):
     """G3PATCH2 (probe.c apply_patches): base 0 (no pointer slots), then (offset, length, bytes)."""
     blob = struct.pack('<8sQQ', b'G3PATCH2', 0, len(writes))
@@ -168,9 +184,23 @@ def prepare(game_dir, out_dir, mode):
             except ValueError as error:
                 lines.append(f'Frame rate: {error}: patches not applied, 30 FPS')
                 mode, writes = '30', []
+    # The game's own Garlic heap is always 2816 MiB (larger on Pro); expand it to 4064 MiB
+    # at every resolution. The instruction bytes are checked, so another eboot build is untouched.
+    try:
+        heap_eboot = (Path(game_dir) / 'eboot.bin').read_bytes()
+        if heap_eboot[:4] == SELF_MAGIC:
+            from prepare import parse_self
+            heap_eboot = bytes(parse_self(heap_eboot)[0])
+        heap = garlic_writes(heap_eboot)
+        writes += heap
+    except (OSError, ValueError) as error:
+        lines.append(f'GPU heap: {error}: not applied, 2816 MB')
     write_patch_file(Path(out_dir) / 'patches.bin', writes)
     for _, data, what in writes:
-        lines.append(f'Frame rate patch {what} ({data.hex()})')
+        if what.startswith('GPU heap'):
+            lines.append(f'Patch garlic: {what} ({data.hex()})')
+        else:
+            lines.append(f'Frame rate patch {what} ({data.hex()})')
     lines.append(f'Frame rate: {mode} FPS mode, {len(writes)} patch writes')
     return mode, lines
 

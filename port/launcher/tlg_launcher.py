@@ -42,6 +42,33 @@ TEXT = {
     'fps_unlocked': ('Unlocked (up to the display)', 'Livre (até a taxa do monitor)'),
     'fps_hint': ('60/unlocked patch eboot 1.03 in memory; see docs/60fps.md',
                  '60/livre alteram o eboot 1.03 na memória; ver docs/60fps.md'),
+    'advanced': ('Advanced…', 'Avançado…'),
+    'advanced_title': ('Advanced GPU readback settings', 'Configurações avançadas de leitura da GPU'),
+    'advanced_hint': ('The game reads GPU-written memory on the CPU. Keep the defaults unless a scene breaks or you are testing. Most changes apply at the next start; the readback batch also appears in the in-game Performance menu.',
+                      'O jogo lê na CPU a memória escrita pela GPU. Mantenha os padrões, a menos que uma cena apresente problemas ou esteja testando. A maioria das mudanças vale na próxima inicialização; o lote de leitura também aparece no menu Desempenho do jogo.'),
+    'gpu_readbacks': ('GPU readback mode', 'Modo de leitura da GPU'),
+    'readbacks_2': ('Precise', 'Preciso'),
+    'readbacks_1': ('Relaxed', 'Relaxado'),
+    'readbacks_0': ('Off', 'Desligado'),
+    'deferred_readback': ('Deferred GPU readbacks', 'Leituras da GPU adiadas'),
+    'deferred_readback_hint': ('Only the thread that reads GPU results waits, not the whole GPU.', 'Só a thread que lê resultados da GPU espera, não a GPU inteira.'),
+    'rb_hot': ('Hot readbacks', 'Leituras quentes'),
+    'rb_hot_hint': ('Small regions read repeatedly stay readable instead of waiting every time.', 'Pequenas regiões lidas repetidamente continuam legíveis em vez de esperar toda vez.'),
+    'fast_read_fault': ('Skip readbacks of unchanged memory', 'Pular leituras de memória inalterada'),
+    'fast_read_fault_hint': ('A CPU read of memory the GPU did not write does not wait for the GPU thread.', 'Uma leitura da CPU de memória que a GPU não escreveu não espera pela thread da GPU.'),
+    'readback_linear': ('Read small render targets back', 'Ler de volta render targets pequenos'),
+    'readback_linear_hint': ('The game uses these for auto exposure; turning this off can make scenes too dark or bright.', 'O jogo usa isso para exposição automática; desligar pode deixar as cenas escuras ou claras demais.'),
+    'stale_readback': ('Stale readbacks', 'Leituras da GPU atrasadas'),
+    'stale_readback_hint': ('CPU reads use the last published GPU version instead of waiting; may break gameplay timing.', 'Leituras da CPU usam a última versão publicada pela GPU em vez de esperar; pode afetar o tempo da jogabilidade.'),
+    'gc_batch_download': ('Batch write-backs of evicted textures', 'Agrupar gravações de texturas descartadas'),
+    'gc_batch_download_hint': ('Wait for the GPU once for all evicted textures instead of once per texture.', 'Espera a GPU uma vez para todas as texturas descartadas em vez de uma vez por textura.'),
+    'async_fences': ('Asynchronous fences', 'Fences assíncronas'),
+    'async_fences_hint': ('Signal fences after their preceding memory copies complete instead of waiting for them.', 'Sinaliza fences após as cópias de memória anteriores terminarem, em vez de esperar.'),
+    'readback_batch': ('GPU readback batch', 'Lote de leituras da GPU'),
+    'readback_batch_0': ('Off (recommended)', 'Desligado (recomendado)'),
+    'readback_batch_16': ('16 MB', '16 MB'),
+    'readback_batch_64': ('64 MB (not recommended)', '64 MB (não recomendado)'),
+    'readback_batch_hint': ('Also copy nearby GPU-written data when the game reads GPU memory. Off is fastest in current tests.', 'Também copia dados próximos escritos pela GPU quando o jogo lê memória da GPU. Desligado é o mais rápido nos testes atuais.'),
     'show_fps': ('Show FPS overlay at start (F10 toggles)', 'Mostrar overlay de FPS ao iniciar (F10 alterna)'),
     'vram': ('Texture cache budget (MB of VRAM)', 'Orçamento do cache de texturas (MB de VRAM)'),
     'vram_hint': ('6 GB card: 5600 · 8 GB: 7000 · 12 GB: 10500 · 16 GB: 14000 · 24 GB: 21500. This is video card memory (VRAM), not RAM; never above your card\'s VRAM.',
@@ -318,6 +345,7 @@ class Launcher:
         self.play_button = ttk.Button(buttons, text=self.t('play'), style='Play.TButton', command=self.play)
         self.play_button.pack(side='right', ipadx=30, ipady=8)
         ttk.Button(buttons, text=self.t('logs'), command=lambda: self.open(tlg_run.LOG_DIR)).pack(side='right', padx=6)
+        ttk.Button(buttons, text=self.t('advanced'), command=self.advanced_dialog).pack(side='right', padx=6)
         ttk.Button(buttons, text=self.t('saves'), command=lambda: self.open(tlg_run.USER_DIR / 'savedata')).pack(side='right')
         self.cache_button = ttk.Button(buttons, text=self.t('clear_cache'), command=self.clear_cache)
         self.cache_button.pack(side='right', padx=(0, 6))
@@ -581,6 +609,105 @@ class Launcher:
             message = self.t('clear_cache_done', size=freed)
             messagebox.showinfo(self.t('clear_cache'), message)
         self.append(message)
+
+    def advanced_dialog(self):
+        """GPU readback options: persistent startup switches plus the in-game readback batch."""
+        if getattr(self, 'advanced_window', None) and self.advanced_window.winfo_exists():
+            self.advanced_window.lift()
+            return
+        win = self.advanced_window = tk.Toplevel(self.root)
+        win.title(self.t('advanced_title'))
+        win.transient(self.root)
+        win.minsize(760, 600)
+        frame = ttk.Frame(win, padding=12)
+        frame.pack(fill='both', expand=True)
+        ttk.Label(frame, text=self.t('advanced_hint'), wraplength=720, justify='left').pack(anchor='w', pady=(0, 10))
+
+        mode_frame = ttk.LabelFrame(frame, text=self.t('gpu_readbacks'), padding=8)
+        mode_frame.pack(fill='x', pady=(0, 8))
+        modes = ('2', '1', '0')
+        mode = ttk.Combobox(mode_frame, state='readonly', width=20,
+                            values=[self.t('readbacks_' + value) for value in modes])
+        current = str(self.settings.get('gpu_readbacks', '2'))
+        mode.current(modes.index(current) if current in modes else 0)
+        mode.pack(side='left')
+
+        def save_mode(_=None):
+            value = modes[mode.current()]
+            if value == '2':
+                self.settings.pop('gpu_readbacks', None)
+            else:
+                self.settings['gpu_readbacks'] = value
+            tlg_run.save_settings(self.settings)
+
+        mode.bind('<<ComboboxSelected>>', save_mode)
+
+        columns = ttk.Frame(frame)
+        columns.pack(fill='both', expand=True)
+        columns.columnconfigure(0, weight=1)
+        columns.columnconfigure(1, weight=1)
+        flags = (
+            ('deferred_readback', True),
+            ('rb_hot', True),
+            ('fast_read_fault', True),
+            ('readback_linear', True),
+            ('stale_readback', False),
+            ('gc_batch_download', False),
+            ('async_fences', False),
+        )
+        variables = {}
+        for index, (key, default) in enumerate(flags):
+            column, row = index % 2, (index // 2) * 2
+            cell = ttk.Frame(columns, padding=(4, 2))
+            cell.grid(row=row, column=column, sticky='nw', padx=4, pady=2)
+            var = tk.BooleanVar(value=bool(self.settings.get(key, default)))
+            variables[key] = var
+
+            def toggled(k=key, v=var, d=default):
+                if v.get() == d:
+                    self.settings.pop(k, None)
+                else:
+                    self.settings[k] = v.get()
+                tlg_run.save_settings(self.settings)
+
+            ttk.Checkbutton(cell, text=self.t(key), variable=var, command=toggled).pack(anchor='w')
+            ttk.Label(cell, text=self.t(key + '_hint'), foreground='#777', wraplength=340,
+                      justify='left').pack(anchor='w', padx=(20, 0), pady=(0, 5))
+
+        batch_frame = ttk.LabelFrame(frame, text=self.t('readback_batch'), padding=8)
+        batch_frame.pack(fill='x', pady=(8, 0))
+        sizes = ('0', '16', '64')
+        batch = ttk.Combobox(batch_frame, state='readonly', width=26,
+                             values=[self.t('readback_batch_' + value) for value in sizes])
+        ini_path = tlg_run.USER_DIR / 'tlg.ini'
+        current_batch = tlg_run.read_ini(ini_path).get('readback_batch', '0')
+        batch.current(sizes.index(current_batch) if current_batch in sizes else 0)
+        batch.pack(side='left')
+        ttk.Label(batch_frame, text=self.t('readback_batch_hint'), foreground='#777', wraplength=520,
+                  justify='left').pack(side='left', padx=10)
+
+        def save_batch(_=None):
+            tlg_run.USER_DIR.mkdir(parents=True, exist_ok=True)
+            tlg_run.update_ini(ini_path, {'readback_batch': sizes[batch.current()]})
+
+        batch.bind('<<ComboboxSelected>>', save_batch)
+
+        bottom = ttk.Frame(frame)
+        bottom.pack(fill='x', pady=(12, 0))
+
+        def reset():
+            self.settings.pop('gpu_readbacks', None)
+            for key, _ in flags:
+                self.settings.pop(key, None)
+                variables[key].set(dict(flags)[key])
+            tlg_run.save_settings(self.settings)
+            mode.current(0)
+            tlg_run.USER_DIR.mkdir(parents=True, exist_ok=True)
+            tlg_run.update_ini(ini_path, {'readback_batch': '0'})
+            batch.current(0)
+
+        ttk.Button(bottom, text=self.t('reset'), command=reset).pack(side='left')
+        ttk.Button(bottom, text=self.t('close'), command=win.destroy).pack(side='right')
 
     def append(self, line):
         self.log.configure(state='normal')

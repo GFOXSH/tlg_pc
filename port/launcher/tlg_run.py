@@ -86,6 +86,8 @@ DEFAULT_SETTINGS = {
 FRAME_RATES = ['30', '60', 'unlocked']
 # The frame rate mode prepare() really applied (another eboot build stays at 30).
 applied_frame_rate = '30'
+# MiB added to the game's Garlic GPU heap by scripts/tlg_patches.py.
+applied_garlic_extra = 0
 
 # Keyboard and mouse defaults of src/runtime_pad.c, in its key_map syntax ('|': several).
 DEFAULT_KEYS = {
@@ -135,6 +137,11 @@ def load_settings():
         settings.update(json.loads(config_path().read_text(encoding='utf-8')))
     except (OSError, ValueError):
         pass
+    # Once: deferred readback became the measured default in October 2026. Drop an older
+    # explicit false value from launchers that stored every switch, defaults included.
+    if not settings.get('readback_defaults_2026_10'):
+        settings.pop('deferred_readback', None)
+        settings['readback_defaults_2026_10'] = True
     # The in-game menu may have changed the mouse since: tlg.ini wins for those keys.
     ini = read_ini(USER_DIR / 'tlg.ini')
     try:
@@ -284,7 +291,8 @@ def frame_rate(settings):
 def prepare(settings, log=print):
     """Builds out/boot-linked.bin, out/content.bin and out/patches.bin (frame rate patches);
     returns the module list that was linked."""
-    global applied_frame_rate
+    global applied_frame_rate, applied_garlic_extra
+    applied_garlic_extra = 0
     game = settings['game_dir']
     scripts = PORT_DIR / 'scripts'
     modules = ['libc.prx', 'libSceFios2.prx']
@@ -307,6 +315,9 @@ def prepare(settings, log=print):
             log(line)
             if line.startswith('Frame rate: ') and line.endswith(' patch writes'):
                 applied_frame_rate = line.split()[2]
+            if line.startswith('Patch garlic: '):
+                words = line.split()
+                applied_garlic_extra = int(words[-3]) - int(words[-5])
     isa_table(log)
     return modules
 
@@ -393,6 +404,25 @@ def build_env(settings, extra=None):
     env = dict(os.environ)
     for key, value in DEFAULT_ENV.items():
         env.setdefault(key, value)  # explicit TLG_* in the environment always win
+    # Advanced GPU-readback controls. Values equal to the code defaults are deliberately omitted;
+    # explicit TLG_* environment variables always take precedence over launcher settings.
+    readback_mode = str(settings.get('gpu_readbacks', '2'))
+    if readback_mode not in ('0', '1', '2'):
+        readback_mode = '2'
+    if readback_mode != '2' and 'TLG_READBACKS' not in os.environ:
+        env['TLG_READBACKS'] = readback_mode
+    readback_flags = (
+        ('deferred_readback', 'TLG_DEFERRED_READBACK', True),
+        ('rb_hot', 'TLG_RB_HOT', True),
+        ('fast_read_fault', 'TLG_FAST_READ_FAULT', True),
+        ('readback_linear', 'TLG_READBACK_LINEAR', True),
+        ('stale_readback', 'TLG_STALE_READBACK', False),
+        ('gc_batch_download', 'TLG_GC_BATCH_DOWNLOAD', False),
+        ('async_fences', 'TLG_ASYNC_FENCES', False),
+    )
+    for setting_key, env_key, default in readback_flags:
+        if setting_key in settings and bool(settings[setting_key]) != default and env_key not in os.environ:
+            env[env_key] = '1' if settings[setting_key] else '0'
     env['TLG_GC_BUDGET_MB'] = os.environ.get('TLG_GC_BUDGET_MB', str(int(settings['vram_budget_mb'])))
     env['TLG_LANGUAGE'] = os.environ.get('TLG_LANGUAGE', str(
         game_languages(settings.get('game_dir')).get(settings['game_language'], 1)))
@@ -410,8 +440,14 @@ def build_env(settings, extra=None):
     # The present limiter never lets more frames through than the patched engine rate; unlocked
     # flips as soon as a frame is ready (480 Hz vblank) up to the display refresh or the menu limit.
     env['TLG_ENGINE_FPS'] = {'30': '30', '60': '60'}.get(applied_frame_rate, '240')
-    if applied_frame_rate == 'unlocked':
-        env.setdefault('TLG_VBLANK_HZ', '0')
+    # 30/60: a 240 Hz vblank shows a late frame ~4 ms late instead of a full 60 Hz vblank later.
+    # The present limiter keeps flips at the patched engine rate (driver.cpp PresentThread).
+    env.setdefault('TLG_VBLANK_HZ', '0' if applied_frame_rate == 'unlocked' else '240')
+    if applied_frame_rate in ('60', 'unlocked'):
+        env.setdefault('TLG_BUFFER_READBACK_STATS', '1')
+    # Grow direct memory with the enlarged Garlic heap so render targets and guest allocations fit.
+    if applied_garlic_extra:
+        env.setdefault('TLG_DMEM_MB', str(5056 + applied_garlic_extra))
     restart = f'"{sys.executable}" --play' if FROZEN else f'"{sys.executable}" "{Path(__file__).resolve()}"'
     env.setdefault('TLG_RESTART_COMMAND', restart)
     # Linux package: the libraries built with the port (SDL3, FFmpeg, ...) are in out/lib.
