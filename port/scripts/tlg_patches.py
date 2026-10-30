@@ -23,6 +23,47 @@ SELF_MAGIC = b'O\x15=\x1d'
 TEXT_FILE_OFFSET = 0x4000      # PT_LOAD 0 (R E): file offset of vaddr 0
 TEXT_SIZE = 0x16b2d5c
 GHIDRA_BASE = 0x1000000
+# ELF program-header types whose file bytes are part of the loaded eboot image.
+LOADED_SEGMENTS = (1, 0x61000010)  # PT_LOAD, PT_SCE_RELRO
+
+
+def file_offset(eboot, image_offset, length):
+    """Map an image-relative virtual address to its file offset through a loaded ELF segment."""
+    if (eboot[:4] != b'\x7fELF' or len(eboot) < 0x40 or
+            eboot[4] != 2 or eboot[5] != 1 or image_offset < 0 or length < 0):
+        return None
+    header_size = struct.calcsize('<IIQQQQQQ')
+    try:
+        phoff, = struct.unpack_from('<Q', eboot, 0x20)
+        phentsize, phnum = struct.unpack_from('<HH', eboot, 0x36)
+        if phentsize < header_size or phnum == 0 or phoff + phentsize * phnum > len(eboot):
+            return None
+        image_end = image_offset + length
+        for i in range(phnum):
+            pos = phoff + i * phentsize
+            kind, _, p_offset, vaddr, _, filesz, _, _ = struct.unpack_from(
+                '<IIQQQQQQ', eboot, pos)
+            if (kind in LOADED_SEGMENTS and vaddr <= image_offset and
+                    image_end <= vaddr + filesz):
+                start = p_offset + image_offset - vaddr
+                end = start + length
+                if start >= 0 and end <= len(eboot) and end <= p_offset + filesz:
+                    return start
+    except struct.error:
+        return None
+    return None
+
+
+def checked_offset(eboot, address, expected):
+    """Validate bytes at a Ghidra address and return its image-relative patch offset."""
+    offset = address - GHIDRA_BASE
+    start = file_offset(eboot, offset, len(expected))
+    if start is None:
+        raise ValueError(f'{address:#x} is not in a loaded eboot segment')
+    found = eboot[start:start + len(expected)]
+    if found != expected:
+        raise ValueError(f'{address:#x} has {found.hex()}, expected {expected.hex()}')
+    return offset
 # Game GPU heap (Gomalloc), shared by render targets and stage allocations. 4064 MiB leaves
 # 32 MiB below the 4 GiB cap for allocator rounding.
 GARLIC_SIZE = 0x1dd3a46
@@ -118,19 +159,17 @@ def mode_writes(eboot, names):
             offset = address - GHIDRA_BASE
             if not (0 <= offset and offset + len(expected) <= TEXT_SIZE) or len(expected) != len(new):
                 raise ValueError(f'{name}: bad patch entry at {address:#x}')
-            found = eboot[TEXT_FILE_OFFSET + offset:TEXT_FILE_OFFSET + offset + len(expected)]
-            if found != expected:
-                raise ValueError(f'{name}: {address:#x} has {found.hex()}, expected {expected.hex()}')
+            try:
+                checked_offset(eboot, address, expected)
+            except ValueError as error:
+                raise ValueError(f'{name}: {error}') from error
             writes.append((offset, new, f'{name}: {address:#x} {what}'))
     return writes
 
 
 def garlic_writes(eboot):
     """A checked 4064 MiB game GPU heap patch for every resolution and FPS mode."""
-    offset = GARLIC_SIZE - GHIDRA_BASE
-    found = eboot[TEXT_FILE_OFFSET + offset:TEXT_FILE_OFFSET + offset + len(GARLIC_SIZE_EXPECTED)]
-    if found != GARLIC_SIZE_EXPECTED:
-        raise ValueError(f'GPU heap: {GARLIC_SIZE:#x} has {found.hex()}, expected {GARLIC_SIZE_EXPECTED.hex()}')
+    offset = checked_offset(eboot, GARLIC_SIZE, GARLIC_SIZE_EXPECTED)
     size_mb = 2816 + GARLIC_EXTRA_MB
     data = GARLIC_SIZE_EXPECTED[:2] + struct.pack('<I', size_mb << 20)
     return [(offset, data, f'GPU heap {2816} -> {size_mb} MB')]

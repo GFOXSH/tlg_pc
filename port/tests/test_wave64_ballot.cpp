@@ -9,8 +9,8 @@
 
 using namespace Shader;
 
-// libtlggpu.so calls into the runtime; test_gpu_runtime_stubs.cpp has the rest.
-extern "C" void runtime_report(void) {}
+// libtlggpu.so calls into the runtime; test_gpu_runtime_stubs.cpp has the rest (weak: some ports stub it there).
+extern "C" __attribute__((weak)) void runtime_report(void) {}
 
 // A 64-thread compute block with one ballot in uniform flow, on a 32-wide host: both 32-lane
 // halves must read their wave's pair of LDS slots, so the 64-bit load's address is the slot

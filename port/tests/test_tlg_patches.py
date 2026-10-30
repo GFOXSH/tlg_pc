@@ -19,11 +19,12 @@ def text_with(names, expected=True):
     return text
 
 
-def plain_elf(text):
-    data = bytearray(t.TEXT_FILE_OFFSET) + text
+def plain_elf(text, segment_offset=None):
+    segment_offset = t.TEXT_FILE_OFFSET if segment_offset is None else segment_offset
+    data = bytearray(segment_offset) + text
     struct.pack_into('<16sHHIQQQIHHHHHH', data, 0,
                      b'\x7fELF\x02\x01\x01\x09', 0xfe10, 62, 1, 0, 64, 0, 0, 64, 56, 1, 0, 0, 0)
-    struct.pack_into('<IIQQQQQQ', data, 64, 1, 5, t.TEXT_FILE_OFFSET, 0, 0, len(text), len(text), 0x4000)
+    struct.pack_into('<IIQQQQQQ', data, 64, 1, 5, segment_offset, 0, 0, len(text), len(text), 0x4000)
     return data
 
 
@@ -77,6 +78,27 @@ class FrameRatePatchTests(unittest.TestCase):
         self.assertEqual(offset, t.GARLIC_SIZE - t.GHIDRA_BASE)
         self.assertEqual(blob[40:40 + size],
                          bytes.fromhex('41bf') + struct.pack('<I', (2816 + t.GARLIC_EXTRA_MB) << 20))
+
+    def test_gpu_heap_uses_the_elf_load_segment_file_offset(self):
+        # The image-relative address is unchanged, but this PT_LOAD stores its bytes elsewhere.
+        eboot = plain_elf(text_with(t.MODES['60']), segment_offset=0x8000)
+        patch_offset = t.GARLIC_SIZE - t.GHIDRA_BASE
+        file_pos = t.file_offset(eboot, patch_offset, len(t.GARLIC_SIZE_EXPECTED))
+        self.assertEqual(file_pos, 0x8000 + patch_offset)
+        self.assertEqual(eboot[file_pos:file_pos + len(t.GARLIC_SIZE_EXPECTED)],
+                         t.GARLIC_SIZE_EXPECTED)
+        (offset, data, _), = t.garlic_writes(eboot)
+        self.assertEqual(offset, patch_offset)
+        self.assertEqual(data[:2], bytes.fromhex('41bf'))
+        self.assertEqual(len(t.mode_writes(eboot, t.MODES['60'])),
+                         sum(len(t.PATCHES[name]) for name in t.MODES['60']))
+
+    def test_unmapped_gpu_heap_address_is_rejected(self):
+        eboot = bytearray(plain_elf(text_with([])))
+        # PT_LOAD p_filesz is too short to contain the Garlic instruction.
+        struct.pack_into('<Q', eboot, 64 + 32, t.GARLIC_SIZE - t.GHIDRA_BASE)
+        with self.assertRaises(ValueError):
+            t.garlic_writes(eboot)
 
     def test_30_without_a_matching_heap_instruction_stays_unpatched(self):
         applied, lines, blob = self.prepare(plain_elf(text_with([], expected=False)), '30')
