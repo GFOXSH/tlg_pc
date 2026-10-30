@@ -67,6 +67,7 @@ DEFAULT_ENV = {
 # Supported Advanced GPU readback switches (setting key, environment variable, default).
 # Keep this list in sync with the controls and implementations in the GPU code.
 READBACK_FLAGS = (
+    ('rb_hot', 'TLG_RB_HOT', True),
     ('deferred_readback', 'TLG_DEFERRED_READBACK', True),
     ('fast_read_fault', 'TLG_FAST_READ_FAULT', True),
     ('readback_linear', 'TLG_READBACK_LINEAR', True),

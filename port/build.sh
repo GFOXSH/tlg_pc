@@ -15,11 +15,6 @@ MINGW*|MSYS*)
           ! -f gpu/third_party/xbyak/xbyak/xbyak.h ]]; then
         git submodule update --init --recursive
     fi
-    for patch in gpu/patches/fsr-vulkan/*.patch; do
-        if ! git -C gpu/third_party/fsr-vulkan apply --reverse --check "$PWD/$patch" 2>/dev/null; then
-            git -C gpu/third_party/fsr-vulkan apply "$PWD/$patch"
-        fi
-    done
     cmake -S gpu -B out/gpu -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DTLG_PGO=off \
         -DTLG_LTO="${TLG_LTO:-OFF}" -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ >/dev/null
     echo "GPU library and loader: LTO ${TLG_LTO:-OFF}"
@@ -59,16 +54,12 @@ if [[ -z $pgo ]]; then
     if [[ -n $(find pgo -name '*.gcda' -print -quit 2>/dev/null) ]]; then pgo=use; else pgo=off; fi
 fi
 mkdir -p pgo
-# Submodules (git clone --recursive, or: git submodule update --init) and this port's changes
-# to FSR-Vulkan (gpu/patches/fsr-vulkan), applied to its working tree once.
+# Submodules (git clone --recursive, or: git submodule update --init). FSR4-v07 provider
+# sources and libc++ compatibility are maintained in this repository; no submodule working tree
+# is modified during configuration or build.
 if [[ ! -f gpu/third_party/fsr-vulkan/CMakeLists.txt || ! -f gpu/third_party/imgui/imgui.h ]]; then
     git submodule update --init --recursive
 fi
-for patch in gpu/patches/fsr-vulkan/*.patch; do
-    if ! git -C gpu/third_party/fsr-vulkan apply --reverse --check "$PWD/$patch" 2>/dev/null; then
-        git -C gpu/third_party/fsr-vulkan apply "$PWD/$patch"
-    fi
-done
 cmake -S gpu -B out/gpu -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DTLG_PGO="$pgo" \
     -DTLG_LTO="${TLG_LTO:-ON}" -DTLG_PGO_DIR="$PWD/pgo" >/dev/null
 echo "GPU library: PGO $pgo, LTO ${TLG_LTO:-ON}"

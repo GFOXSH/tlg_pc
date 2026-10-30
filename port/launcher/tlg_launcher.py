@@ -61,6 +61,9 @@ TEXT = {
     'deferred_readback_why': ('Measured 3–6% more FPS on three test routes (2026-10-26). Turn it off only to check whether a broken scene comes from deferred readbacks.',
                               'Mediu 3–6% a mais de FPS em três rotas de teste (2026-10-26). Desligue apenas para verificar se uma cena com problema vem das leituras adiadas.'),
     'fast_read_fault': ('Skip readbacks of unchanged memory', 'Pular leituras de memória inalterada'),
+    'rb_hot': ('Prefetch recently requested GPU readback regions', 'Antecipar regiões de leitura da GPU solicitadas recentemente'),
+    'rb_hot_hint': ('When a readback is already waiting for the GPU, include recently requested regions from the same buffer arena in that transfer.', 'Quando uma leitura já está aguardando a GPU, inclui regiões solicitadas recentemente na mesma arena de buffers nessa transferência.'),
+    'rb_hot_why': ('Keeps recently reused GPU-written data ready for the next CPU read. CPU-modified pages are skipped; extra prefetch is capped at 64 KiB per region.', 'Mantém dados escritos pela GPU e reutilizados recentemente prontos para a próxima leitura da CPU. Páginas modificadas pela CPU são ignoradas; a pré-cópia extra é limitada a 64 KiB por região.'),
     'fast_read_fault_hint': ('A CPU read of memory the GPU did not write does not wait for the GPU thread.', 'Uma leitura da CPU de memória que a GPU não escreveu não espera pela thread da GPU.'),
     'fast_read_fault_why': ('Avoids a round trip to the GPU thread when the requested memory has no GPU-written data. Turning it off restores that unnecessary wait.',
                             'Evita uma ida e volta à thread da GPU quando a memória solicitada não contém dados escritos pela GPU. Desligar restaura essa espera desnecessária.'),
@@ -735,7 +738,7 @@ class Launcher:
 
         def reset():
             self.settings.pop('gpu_readbacks', None)
-            self.settings.pop('rb_hot', None)  # obsolete, unused setting from older launchers
+            self.settings.pop('rb_hot', None)  # reset to the backend default (enabled)
             for key, _env_key, _default in flags:
                 self.settings.pop(key, None)
                 variables[key].set(_default)

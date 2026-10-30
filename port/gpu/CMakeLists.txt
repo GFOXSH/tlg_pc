@@ -11,6 +11,15 @@ endif()
 # Frame pointers keep the loader's thread dumps (watchdog, SIGUSR2 sampling) walkable.
 add_compile_options(-fno-omit-frame-pointer)
 
+# The bundled FFX SDK sources rely on several standard headers being included
+# transitively by libstdc++. libc++/MinGW do not guarantee that. Force-include a
+# project-owned compatibility header instead of patching SDK source files.
+if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(
+        "$<$<COMPILE_LANGUAGE:CXX>:-include>"
+        "$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_CURRENT_SOURCE_DIR}/shim/tlg_stdlib_compat.h>")
+endif()
+
 # tlg: link-time optimization (TLG_LTO, default on) and profile-guided optimization
 # (TLG_PGO: off, generate = instrumented build writing into TLG_PGO_DIR, use = build with that
 # profile). Covers tlggpu and the static libraries linked into it. No -march: the same build
@@ -100,6 +109,29 @@ add_subdirectory(third_party/sirit EXCLUDE_FROM_ALL)
 set(FFX_VK_PORTABLE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(FFX_VK_PORTABLE_BUILD_PROBE OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/fsr-vulkan EXCLUDE_FROM_ALL)
+
+# TLG's FSR4-v07 provider is maintained in-tree. Only the FSR3 portable SDK
+# remains sourced from the external submodule; FSR4 no longer consumes its
+# version-specific provider/assets targets.
+set(TLG_FSR4_V07_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/tlg_fsr4_v07")
+add_library(tlg_fsr4_v07_assets STATIC
+    ${TLG_FSR4_V07_DIR}/src/ffx_vk_fsr4_v07_schedule.c
+    ${TLG_FSR4_V07_DIR}/src/ffx_vk_fsr4_v07_assets.c)
+target_compile_features(tlg_fsr4_v07_assets PUBLIC c_std_11)
+target_include_directories(tlg_fsr4_v07_assets PUBLIC ${TLG_FSR4_V07_DIR}/include)
+if (UNIX AND NOT APPLE)
+    target_link_libraries(tlg_fsr4_v07_assets PUBLIC m)
+endif()
+
+add_library(tlg_fsr4_v07_vulkan STATIC
+    ${TLG_FSR4_V07_DIR}/src/ffx_vk_fsr4_v07.c
+    ${TLG_FSR4_V07_DIR}/src/ffx_vk_fsr4_v07_provider.c)
+target_compile_features(tlg_fsr4_v07_vulkan PUBLIC c_std_11)
+target_include_directories(tlg_fsr4_v07_vulkan PUBLIC ${TLG_FSR4_V07_DIR}/include)
+target_link_libraries(tlg_fsr4_v07_vulkan PUBLIC tlg_fsr4_v07_assets Vulkan::Vulkan)
+if (UNIX AND NOT APPLE)
+    target_link_libraries(tlg_fsr4_v07_vulkan PUBLIC m)
+endif()
 
 # Host shaders -> headers (same scheme as shadPS4's host_shaders/CMakeLists.txt).
 set(SHADER_SRC ${CMAKE_CURRENT_SOURCE_DIR}/shadps4/video_core/host_shaders)
@@ -214,7 +246,7 @@ target_compile_options(tlggpu PRIVATE -Wno-deprecated-declarations -Wno-missing-
 if (NOT WIN32)
     target_link_options(tlggpu PRIVATE -Wl,--allow-shlib-undefined)
 endif()
-target_link_libraries(tlggpu PRIVATE ffx-vulkan::portable ffx-vulkan::fsr4-v07-vulkan)
+target_link_libraries(tlggpu PRIVATE ffx-vulkan::portable tlg_fsr4_v07_vulkan)
 target_link_libraries(tlggpu PUBLIC Vulkan::Headers fmt::fmt Boost::headers magic_enum::magic_enum
     tsl::robin_map GPUOpen::VulkanMemoryAllocator PkgConfig::XXHASH PkgConfig::SDL3 PkgConfig::FFMPEG miniz::miniz Zydis::Zydis sirit)
 # xbyak is header-only: the distribution's copy when there is one (Fedora xbyak-devel), else the
@@ -476,7 +508,7 @@ add_dependencies(image-extent-test host_shaders)
 add_executable(fsr4-bench EXCLUDE_FROM_ALL tools/fsr4_bench.cpp
     shadps4/video_core/renderer_vulkan/fsr411/fsr411.cpp)
 target_include_directories(fsr4-bench PRIVATE shadps4/video_core/renderer_vulkan/fsr411)
-target_link_libraries(fsr4-bench PRIVATE ffx-vulkan::fsr4-v07-vulkan ffx-vulkan::fsr4-v07-assets Vulkan::Vulkan)
+target_link_libraries(fsr4-bench PRIVATE tlg_fsr4_v07_vulkan Vulkan::Vulkan)
 
 add_executable(cheat-hook-test ../tests/test_cheat_hook.cpp)
 target_compile_options(cheat-hook-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
