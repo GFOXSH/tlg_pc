@@ -5,6 +5,7 @@
 #include "video_core/amdgpu/liverpool.h"
 
 #include "tlg_toggles.h"
+#include "tlg_settings.h"
 #include "tlg_freeze.h"
 #include "common/assert.h"
 #include "common/debug.h"
@@ -1658,7 +1659,7 @@ void TextureCache::ReportMemory() {
             bytes += size;
         }
     };
-    Group all, written, unevictable, tracked;
+    Group all, written, unevictable, tracked, old, old_written;
     u64 passes, walked, skip_tiled, skip_unpressured, freed;
     {
         std::scoped_lock lock{mutex};
@@ -1687,6 +1688,14 @@ void TextureCache::ReportMemory() {
                 tracked.Add(bytes);
             }
         }
+        lru_cache.ForEachItemBelow(load_cleanup_tick, [&](ImageId image_id) {
+            const Image& image = slot_images[image_id];
+            const u64 bytes = host_bytes(image);
+            old.Add(bytes);
+            if (image.SafeToDownload()) {
+                old_written.Add(bytes);
+            }
+        });
     }
     const auto mib = [](u64 bytes) { return static_cast<unsigned long long>(bytes >> 20); };
     const auto num = [](u64 count) { return static_cast<unsigned long long>(count); };
@@ -1705,9 +1714,12 @@ void TextureCache::ReportMemory() {
                 mib(arenas), (long long)((s64(allocated) - all_images) >> 20),
                 (long long)((s64(driver) - s64(blocks) - s64(arenas)) >> 20));
     std::printf("Texture cache images: %llu (%llu MiB); GPU-written %llu (%llu MiB), of those tiled "
-                "%llu (%llu MiB, never evicted); tracked %llu (%llu MiB)\n",
+                "%llu (%llu MiB, never evicted); tracked %llu (%llu MiB); from before the last load "
+                "%llu (%llu MiB), GPU-written %llu (%llu MiB)\n",
                 num(all.count), mib(all.bytes), num(written.count), mib(written.bytes),
-                num(unevictable.count), mib(unevictable.bytes), num(tracked.count), mib(tracked.bytes));
+                num(unevictable.count), mib(unevictable.bytes), num(tracked.count),
+                mib(tracked.bytes), num(old.count), mib(old.bytes), num(old_written.count),
+                mib(old_written.bytes));
     const u64 lookups = TlgStats::region_lookups.exchange(0, std::memory_order_relaxed);
     const u64 candidates = TlgStats::region_candidates.exchange(0, std::memory_order_relaxed);
     std::printf("Collector (5 s): %llu passes, %llu images walked, %llu skipped (tiled GPU-written), "
@@ -1765,6 +1777,67 @@ void TextureCache::RunGarbageCollector() {
 
     GarbageCollectImages();
     GarbageCollectSamplers();
+    CleanUpAfterLoad();
+}
+
+// Called when HavokScript marks the end of a stage/checkpoint load. The two-second grace period
+// avoids racing the game's deferred resource setup. Eviction is sliced to cap per-frame stalls;
+// GPU-written images are read back and retained rather than discarded.
+void TextureCache::CleanUpAfterLoad() {
+    auto& s = TlgSettings::Get();
+    const auto now = std::chrono::steady_clock::now();
+    if (s.stage_loaded.exchange(false, std::memory_order_relaxed)) {
+        load_cleanup_pending = true;
+        load_cleanup_running = false;
+        load_cleanup_tick = gc_tick;
+        load_cleanup_time = now;
+        return;
+    }
+    if (load_cleanup_pending) {
+        if (now - load_cleanup_time < std::chrono::seconds(2)) {
+            return;
+        }
+        load_cleanup_pending = false;
+        load_cleanup_running = s.texture_cleanup.load(std::memory_order_relaxed);
+        load_cleanup_freed = load_cleanup_bytes = load_cleanup_slices = 0;
+    }
+    if (!load_cleanup_running) {
+        return;
+    }
+    static constexpr u64 SliceImages = 1024;
+    TlgStats::Timer gc_timer{TlgStats::t_gc};
+    std::scoped_lock lock{mutex};
+    u64 kept = 0, freed = 0;
+    bool slice_full = false;
+    ++load_cleanup_slices;
+    lru_cache.ForEachItemBelow(load_cleanup_tick, [&](ImageId image_id) {
+        if (freed == SliceImages) {
+            slice_full = true;
+            return true;
+        }
+        auto& image = slot_images[image_id];
+        ResolveReadbacks(image.info.guest_address, image.info.guest_size, true,
+                         ReadbackSource::CacheCleanup);
+        if (image.SafeToDownload()) {
+            ++kept;
+            return false;
+        }
+        ++freed;
+        ++load_cleanup_freed;
+        load_cleanup_bytes += Common::AlignUp(image.info.guest_size, 1024);
+        FreeImage(image_id);
+        return false;
+    });
+    if (slice_full) {
+        return;
+    }
+    load_cleanup_running = false;
+    std::printf("Texture cache: cleanup after the load freed %llu images (%llu MiB), kept %llu with "
+                "GPU-written data, in %llu slices\n",
+                (unsigned long long)load_cleanup_freed,
+                (unsigned long long)(load_cleanup_bytes >> 20), (unsigned long long)kept,
+                (unsigned long long)load_cleanup_slices);
+    std::fflush(stdout);
 }
 
 void TextureCache::TouchImage(const Image& image) {

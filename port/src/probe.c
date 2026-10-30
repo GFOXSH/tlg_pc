@@ -523,6 +523,42 @@ static int mapped(Segment *segments, uint64_t count, uint64_t address, uint64_t 
             address - segments[i].address <= segments[i].size - bytes) return 1;
     return 0;
 }
+/* HavokScript loadbuffer (0xe7e430, CUSA03745 v01.00): the three call sites in the
+ * developer's reference build are checked before being redirected to the shim. */
+extern ABI int tlg_lua_load(void *L, void *options, const char *buffer, uint64_t size,
+                            const char *name);
+extern void tlg_lua_status(uintptr_t original);
+static void install_lua_hook(Segment *segments, uint64_t count) {
+    static const uint64_t calls[] = {0xd4fe8e, 0xe7e37f, 0xec24bc};
+    const uint64_t target = 0xe7e430;
+    for (unsigned i = 0; i < 3; ++i) {
+        int32_t relative;
+        if (!mapped(segments, count, calls[i], 5) || image[calls[i]] != 0xe8) goto mismatch;
+        memcpy(&relative, image + calls[i] + 1, 4);
+        if (calls[i] + 5 + (int64_t)relative != target) goto mismatch;
+    }
+    unsigned char *stub = allocate(page_size);
+    static const unsigned char jump[] = {0x48,0xb8, 0,0,0,0,0,0,0,0, 0xff,0xe0};
+    memcpy(stub, jump, sizeof(jump));
+    const uintptr_t helper = (uintptr_t)tlg_lua_load;
+    memcpy(stub + 2, &helper, 8);
+    int32_t displacements[3];
+    for (unsigned i = 0; i < 3; ++i) {
+        const int64_t delta = (int64_t)(uintptr_t)stub - (int64_t)(uintptr_t)(image + calls[i] + 5);
+        if (delta < INT32_MIN || delta > INT32_MAX) {
+            printf("Lua hook: unavailable (outside relative-call range)\n");
+            return;
+        }
+        displacements[i] = (int32_t)delta;
+    }
+    protect(stub, page_size, 5);
+    tlg_lua_status((uintptr_t)(image + target));
+    for (unsigned i = 0; i < 3; ++i) memcpy(image + calls[i] + 1, &displacements[i], 4);
+    printf("Lua hook: ready (3 loadbuffer calls)\n");
+    return;
+mismatch:
+    printf("Lua hook: unavailable (code signature mismatch)\n");
+}
 extern ABI float tlg_orbs_gain(void *player, float requested);
 extern void tlg_orbs_status(int supported);
 extern uintptr_t tlg_cheat_flag(unsigned id);
@@ -1442,6 +1478,7 @@ int main(int argc, char **argv) {
     if (gpu_enabled) install_cheats(app0, segments, ns, size);
     if (gpu_enabled) install_actor_watch(app0, segments, ns, size);
     if (gpu_enabled) install_stat_multipliers(app0, segments, ns, size);
+    if (gpu_enabled) install_lua_hook(segments, ns);
 #ifdef _WIN32
     if (gpu_enabled) install_bind_guard(segments, ns);
     if (gpu_enabled) install_reinit_lock(segments, ns);

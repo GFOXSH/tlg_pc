@@ -422,6 +422,7 @@ private:
     void GarbageCollectImages();
     void ReportMemory();
     void GarbageCollectSamplers();
+    void CleanUpAfterLoad();
 
 private:
     const Vulkan::Instance& instance;
@@ -444,6 +445,14 @@ private:
     std::chrono::steady_clock::time_point gc_report_time{};
     u64 gc_passes = 0, gc_walked = 0, gc_skip_tiled = 0, gc_skip_unpressured = 0, gc_freed = 0;
     std::chrono::steady_clock::time_point memory_report_time{};
+    /// Stage-load cleanup: remember the LRU cutoff and defer eviction until loading settles.
+    bool load_cleanup_pending = false;
+    bool load_cleanup_running = false;
+    u64 load_cleanup_tick = 0;
+    u64 load_cleanup_freed = 0;
+    u64 load_cleanup_bytes = 0;
+    u64 load_cleanup_slices = 0;
+    std::chrono::steady_clock::time_point load_cleanup_time{};
     u64 trigger_gc_memory = 0;
     u64 pressure_gc_memory = 0;
     u64 critical_gc_memory = 0;
