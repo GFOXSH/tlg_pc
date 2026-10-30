@@ -64,6 +64,17 @@ DEFAULT_ENV = {
     'TLG_FRAME_STATS': '1',        # FPS in the log every 5 s (scripts/watch_session.sh heartbeat)
 }
 
+# Supported Advanced GPU readback switches (setting key, environment variable, default).
+# Keep this list in sync with the controls and implementations in the GPU code.
+READBACK_FLAGS = (
+    ('deferred_readback', 'TLG_DEFERRED_READBACK', True),
+    ('fast_read_fault', 'TLG_FAST_READ_FAULT', True),
+    ('readback_linear', 'TLG_READBACK_LINEAR', True),
+    ('stale_readback', 'TLG_STALE_READBACK', False),
+    ('gc_batch_download', 'TLG_GC_BATCH_DOWNLOAD', False),
+    ('async_fences', 'TLG_ASYNC_FENCES', False),
+)
+
 DEFAULT_SETTINGS = {
     # Source tree: the merged game view and the console modules of ~/decomp. Package: the player
     # picks the game folder; libSceNgs2.sprx goes in system_lib/ next to the executable.
@@ -411,16 +422,7 @@ def build_env(settings, extra=None):
         readback_mode = '2'
     if readback_mode != '2' and 'TLG_READBACKS' not in os.environ:
         env['TLG_READBACKS'] = readback_mode
-    readback_flags = (
-        ('deferred_readback', 'TLG_DEFERRED_READBACK', True),
-        ('rb_hot', 'TLG_RB_HOT', True),
-        ('fast_read_fault', 'TLG_FAST_READ_FAULT', True),
-        ('readback_linear', 'TLG_READBACK_LINEAR', True),
-        ('stale_readback', 'TLG_STALE_READBACK', False),
-        ('gc_batch_download', 'TLG_GC_BATCH_DOWNLOAD', False),
-        ('async_fences', 'TLG_ASYNC_FENCES', False),
-    )
-    for setting_key, env_key, default in readback_flags:
+    for setting_key, env_key, default in READBACK_FLAGS:
         if setting_key in settings and bool(settings[setting_key]) != default and env_key not in os.environ:
             env[env_key] = '1' if settings[setting_key] else '0'
     env['TLG_GC_BUDGET_MB'] = os.environ.get('TLG_GC_BUDGET_MB', str(int(settings['vram_budget_mb'])))

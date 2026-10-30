@@ -44,31 +44,50 @@ TEXT = {
                  '60/livre alteram o eboot 1.03 na memória; ver docs/60fps.md'),
     'advanced': ('Advanced…', 'Avançado…'),
     'advanced_title': ('Advanced GPU readback settings', 'Configurações avançadas de leitura da GPU'),
-    'advanced_hint': ('The game reads GPU-written memory on the CPU. Keep the defaults unless a scene breaks or you are testing. Most changes apply at the next start; the readback batch also appears in the in-game Performance menu.',
-                      'O jogo lê na CPU a memória escrita pela GPU. Mantenha os padrões, a menos que uma cena apresente problemas ou esteja testando. A maioria das mudanças vale na próxima inicialização; o lote de leitura também aparece no menu Desempenho do jogo.'),
+    'advanced_hint': ('These options control how the CPU receives data written by the GPU. Keep the defaults unless you are diagnosing a specific scene. The readback mode and switches apply when the game starts; GPU readback batch is saved to tlg.ini and applies immediately. Graphics presets never change these options. Performance figures below are developer test results, not guarantees for every PC or scene.',
+                      'Estas opções controlam como a CPU recebe os dados escritos pela GPU. Mantenha os padrões, a menos que esteja diagnosticando uma cena específica. O modo de leitura e os interruptores valem ao iniciar o jogo; o lote de leitura é salvo em tlg.ini e vale imediatamente. Os presets gráficos nunca alteram estas opções. Os números de desempenho abaixo vêm dos testes do desenvolvedor e não são garantias para todo PC ou cena.'),
     'gpu_readbacks': ('GPU readback mode', 'Modo de leitura da GPU'),
+    'gpu_readbacks_hint': ('How CPU reads of GPU-written memory are synchronized.', 'Como as leituras da CPU de memória escrita pela GPU são sincronizadas.'),
+    'gpu_readbacks_why': ('The game reads GPU compute results on the CPU. Precise is required to avoid stale results; Relaxed can return old data, and Off disables readback protection. Keep Precise.',
+                          'O jogo lê na CPU os resultados de compute da GPU. O modo Preciso é necessário para evitar resultados antigos; Relaxado pode retornar dados desatualizados e Desligado desativa a proteção de leitura. Mantenha Preciso.'),
     'readbacks_2': ('Precise', 'Preciso'),
     'readbacks_1': ('Relaxed', 'Relaxado'),
     'readbacks_0': ('Off', 'Desligado'),
+    'mark_default': ('Default: {value}', 'Padrão: {value}'),
+    'mark_on': ('On', 'Ligado'),
+    'mark_off': ('Off', 'Desligado'),
     'deferred_readback': ('Deferred GPU readbacks', 'Leituras da GPU adiadas'),
     'deferred_readback_hint': ('Only the thread that reads GPU results waits, not the whole GPU.', 'Só a thread que lê resultados da GPU espera, não a GPU inteira.'),
-    'rb_hot': ('Hot readbacks', 'Leituras quentes'),
-    'rb_hot_hint': ('Small regions read repeatedly stay readable instead of waiting every time.', 'Pequenas regiões lidas repetidamente continuam legíveis em vez de esperar toda vez.'),
+    'deferred_readback_why': ('Measured 3–6% more FPS on three test routes (2026-10-26). Turn it off only to check whether a broken scene comes from deferred readbacks.',
+                              'Mediu 3–6% a mais de FPS em três rotas de teste (2026-10-26). Desligue apenas para verificar se uma cena com problema vem das leituras adiadas.'),
     'fast_read_fault': ('Skip readbacks of unchanged memory', 'Pular leituras de memória inalterada'),
     'fast_read_fault_hint': ('A CPU read of memory the GPU did not write does not wait for the GPU thread.', 'Uma leitura da CPU de memória que a GPU não escreveu não espera pela thread da GPU.'),
+    'fast_read_fault_why': ('Avoids a round trip to the GPU thread when the requested memory has no GPU-written data. Turning it off restores that unnecessary wait.',
+                            'Evita uma ida e volta à thread da GPU quando a memória solicitada não contém dados escritos pela GPU. Desligar restaura essa espera desnecessária.'),
     'readback_linear': ('Read small render targets back', 'Ler de volta render targets pequenos'),
     'readback_linear_hint': ('The game uses these for auto exposure; turning this off can make scenes too dark or bright.', 'O jogo usa isso para exposição automática; desligar pode deixar as cenas escuras ou claras demais.'),
+    'readback_linear_why': ('The game needs small/linear render-target readbacks for auto exposure. Turning this off can make outdoor scenes too dark or blown out (#38, #40).',
+                            'O jogo precisa ler render targets pequenos/lineares para a exposição automática. Desligar pode deixar cenas externas escuras demais ou claras demais (#38, #40).'),
     'stale_readback': ('Stale readbacks', 'Leituras da GPU atrasadas'),
     'stale_readback_hint': ('CPU reads use the last published GPU version instead of waiting; may break gameplay timing.', 'Leituras da CPU usam a última versão publicada pela GPU em vez de esperar; pode afetar o tempo da jogabilidade.'),
+    'stale_readback_why': ('Can return a previous GPU version (one frame late) to gameplay code. A developer test caused the boy to miss Trico; leave this off for correct timing.',
+                           'Pode entregar à lógica do jogo uma versão anterior da GPU (com um quadro de atraso). Em um teste do desenvolvedor, o menino errou o Trico; mantenha desligado para preservar o tempo correto.'),
     'gc_batch_download': ('Batch write-backs of evicted textures', 'Agrupar gravações de texturas descartadas'),
     'gc_batch_download_hint': ('Wait for the GPU once for all evicted textures instead of once per texture.', 'Espera a GPU uma vez para todas as texturas descartadas em vez de uma vez por textura.'),
+    'gc_batch_download_why': ('Not measured in this game yet. Keep off until a The Last Guardian test shows a benefit.',
+                              'Ainda não foi medido neste jogo. Mantenha desligado até que um teste de The Last Guardian mostre benefício.'),
     'async_fences': ('Asynchronous fences', 'Fences assíncronas'),
     'async_fences_hint': ('Signal fences after their preceding memory copies complete instead of waiting for them.', 'Sinaliza fences após as cópias de memória anteriores terminarem, em vez de esperar.'),
+    'async_fences_why': ('Measured slower (79 vs 83 FPS): the game waits on these fences, so delaying their signal hurts throughput.',
+                         'Foi medido como mais lento (79 contra 83 FPS): o jogo espera por essas fences, então atrasar o sinal reduz o desempenho.'),
     'readback_batch': ('GPU readback batch', 'Lote de leituras da GPU'),
     'readback_batch_0': ('Off (recommended)', 'Desligado (recomendado)'),
     'readback_batch_16': ('16 MB', '16 MB'),
     'readback_batch_64': ('64 MB (not recommended)', '64 MB (não recomendado)'),
-    'readback_batch_hint': ('Also copy nearby GPU-written data when the game reads GPU memory. Off is fastest in current tests.', 'Também copia dados próximos escritos pela GPU quando o jogo lê memória da GPU. Desligado é o mais rápido nos testes atuais.'),
+    'readback_batch_hint': ('Copies nearby GPU-written data when the game reads GPU memory.',
+                            'Copia dados próximos escritos pela GPU quando o jogo lê memória da GPU.'),
+    'readback_batch_why': ('Off was 2–5 FPS faster than batching in the developer tests (2026-10-23); batching adds fence flushes and a side queue.',
+                           'Desligado foi 2–5 FPS mais rápido que o lote nos testes do desenvolvedor (2026-10-23); o lote adiciona sincronizações de fence e uma fila paralela.'),
     'show_fps': ('Show FPS overlay at start (F10 toggles)', 'Mostrar overlay de FPS ao iniciar (F10 alterna)'),
     'vram': ('Texture cache budget (MB of VRAM)', 'Orçamento do cache de texturas (MB de VRAM)'),
     'vram_hint': ('6 GB card: 5600 · 8 GB: 7000 · 12 GB: 10500 · 16 GB: 14000 · 24 GB: 21500. This is video card memory (VRAM), not RAM; never above your card\'s VRAM.',
@@ -611,26 +630,29 @@ class Launcher:
         self.append(message)
 
     def advanced_dialog(self):
-        """GPU readback options: persistent startup switches plus the in-game readback batch."""
+        """The supported GPU readback controls. Each option shows its default and the reason."""
         if getattr(self, 'advanced_window', None) and self.advanced_window.winfo_exists():
             self.advanced_window.lift()
             return
         win = self.advanced_window = tk.Toplevel(self.root)
         win.title(self.t('advanced_title'))
         win.transient(self.root)
-        win.minsize(760, 600)
+        win.minsize(780, 680)
         frame = ttk.Frame(win, padding=12)
         frame.pack(fill='both', expand=True)
-        ttk.Label(frame, text=self.t('advanced_hint'), wraplength=720, justify='left').pack(anchor='w', pady=(0, 10))
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(2, weight=1)
+        ttk.Label(frame, text=self.t('advanced_hint'), wraplength=740, justify='left').grid(
+            row=0, column=0, sticky='ew', pady=(0, 8))
 
         mode_frame = ttk.LabelFrame(frame, text=self.t('gpu_readbacks'), padding=8)
-        mode_frame.pack(fill='x', pady=(0, 8))
+        mode_frame.grid(row=1, column=0, sticky='ew', pady=(0, 8))
         modes = ('2', '1', '0')
         mode = ttk.Combobox(mode_frame, state='readonly', width=20,
                             values=[self.t('readbacks_' + value) for value in modes])
         current = str(self.settings.get('gpu_readbacks', '2'))
         mode.current(modes.index(current) if current in modes else 0)
-        mode.pack(side='left')
+        mode.grid(row=0, column=0, sticky='w')
 
         def save_mode(_=None):
             value = modes[mode.current()]
@@ -641,25 +663,38 @@ class Launcher:
             tlg_run.save_settings(self.settings)
 
         mode.bind('<<ComboboxSelected>>', save_mode)
+        mode_note = (self.t('gpu_readbacks_hint') + '\\n' +
+                     self.t('mark_default', value=self.t('readbacks_2')) + ' — ' +
+                     self.t('gpu_readbacks_why'))
+        ttk.Label(mode_frame, text=mode_note, foreground='#777', wraplength=720,
+                  justify='left').grid(row=1, column=0, sticky='w', pady=(6, 0))
 
         columns = ttk.Frame(frame)
-        columns.pack(fill='both', expand=True)
+        columns.grid(row=2, column=0, sticky='nsew')
         columns.columnconfigure(0, weight=1)
         columns.columnconfigure(1, weight=1)
-        flags = (
-            ('deferred_readback', True),
-            ('rb_hot', True),
-            ('fast_read_fault', True),
-            ('readback_linear', True),
-            ('stale_readback', False),
-            ('gc_batch_download', False),
-            ('async_fences', False),
-        )
+        rows = [0, 0]
+
+        def place(column):
+            row = rows[column]
+            rows[column] += 2
+            return columns, row, column
+
+        def note(parent, row, column, key, default):
+            state = self.t('mark_on' if default else 'mark_off')
+            detail = (self.t(key + '_hint') + '\\n' +
+                      self.t('mark_default', value=state) + ' — ' + self.t(key + '_why'))
+            ttk.Label(parent, text=detail, foreground='#777', wraplength=350,
+                      justify='left').grid(row=row + 1, column=column, sticky='w',
+                                           padx=4, pady=(0, 8))
+
         variables = {}
-        for index, (key, default) in enumerate(flags):
-            column, row = index % 2, (index // 2) * 2
-            cell = ttk.Frame(columns, padding=(4, 2))
-            cell.grid(row=row, column=column, sticky='nw', padx=4, pady=2)
+        flags = tlg_run.READBACK_FLAGS
+        for index, (key, _env_key, default) in enumerate(flags):
+            column = 0 if default else 1
+            parent, row, column = place(column)
+            cell = ttk.Frame(parent, padding=(4, 2))
+            cell.grid(row=row, column=column, sticky='new', padx=4, pady=2)
             var = tk.BooleanVar(value=bool(self.settings.get(key, default)))
             variables[key] = var
 
@@ -670,21 +705,24 @@ class Launcher:
                     self.settings[k] = v.get()
                 tlg_run.save_settings(self.settings)
 
-            ttk.Checkbutton(cell, text=self.t(key), variable=var, command=toggled).pack(anchor='w')
-            ttk.Label(cell, text=self.t(key + '_hint'), foreground='#777', wraplength=340,
-                      justify='left').pack(anchor='w', padx=(20, 0), pady=(0, 5))
+            ttk.Checkbutton(cell, text=self.t(key), variable=var, command=toggled).grid(
+                row=0, column=0, sticky='w')
+            note(cell, 0, 0, key, default)
 
         batch_frame = ttk.LabelFrame(frame, text=self.t('readback_batch'), padding=8)
-        batch_frame.pack(fill='x', pady=(8, 0))
+        batch_frame.grid(row=3, column=0, sticky='ew', pady=(8, 0))
         sizes = ('0', '16', '64')
         batch = ttk.Combobox(batch_frame, state='readonly', width=26,
                              values=[self.t('readback_batch_' + value) for value in sizes])
         ini_path = tlg_run.USER_DIR / 'tlg.ini'
         current_batch = tlg_run.read_ini(ini_path).get('readback_batch', '0')
         batch.current(sizes.index(current_batch) if current_batch in sizes else 0)
-        batch.pack(side='left')
-        ttk.Label(batch_frame, text=self.t('readback_batch_hint'), foreground='#777', wraplength=520,
-                  justify='left').pack(side='left', padx=10)
+        batch.grid(row=0, column=0, sticky='w')
+        batch_note = (self.t('readback_batch_hint') + '\\n' +
+                      self.t('mark_default', value=self.t('readback_batch_0')) + ' — ' +
+                      self.t('readback_batch_why'))
+        ttk.Label(batch_frame, text=batch_note, foreground='#777', wraplength=720,
+                  justify='left').grid(row=1, column=0, sticky='w', pady=(6, 0))
 
         def save_batch(_=None):
             tlg_run.USER_DIR.mkdir(parents=True, exist_ok=True)
@@ -693,13 +731,14 @@ class Launcher:
         batch.bind('<<ComboboxSelected>>', save_batch)
 
         bottom = ttk.Frame(frame)
-        bottom.pack(fill='x', pady=(12, 0))
+        bottom.grid(row=4, column=0, sticky='ew', pady=(12, 0))
 
         def reset():
             self.settings.pop('gpu_readbacks', None)
-            for key, _ in flags:
+            self.settings.pop('rb_hot', None)  # obsolete, unused setting from older launchers
+            for key, _env_key, _default in flags:
                 self.settings.pop(key, None)
-                variables[key].set(dict(flags)[key])
+                variables[key].set(_default)
             tlg_run.save_settings(self.settings)
             mode.current(0)
             tlg_run.USER_DIR.mkdir(parents=True, exist_ok=True)
