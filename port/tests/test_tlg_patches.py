@@ -8,7 +8,11 @@ import tlg_patches as t
 
 def text_with(names, expected=True):
     """A text segment with each patch's expected bytes (or other bytes) at its offset."""
-    text = bytearray(t.TEXT_SIZE)
+    patch_ends = [address - t.GHIDRA_BASE + len(original)
+                  for patches in t.PATCHES.values()
+                  for address, original, _new, _what in patches]
+    patch_ends.append(t.GARLIC_SIZE - t.GHIDRA_BASE + len(t.GARLIC_SIZE_EXPECTED))
+    text = bytearray(max([t.TEXT_SIZE] + patch_ends))
     for name in names:
         for address, original, _, _ in t.PATCHES[name]:
             offset = address - t.GHIDRA_BASE
@@ -41,17 +45,17 @@ def self_dump(text):
 
 
 class FrameRatePatchTests(unittest.TestCase):
-    def prepare(self, eboot, mode):
+    def prepare(self, eboot, mode, resolution='1080p'):
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp, 'eboot.bin').write_bytes(eboot)
-            applied, lines = t.prepare(tmp, tmp, mode)
+            applied, lines = t.prepare(tmp, tmp, mode, resolution)
             return applied, lines, Path(tmp, 'patches.bin').read_bytes()
 
     def test_self_dump_of_103_gets_the_patches(self):
         # #40: a SELF dump of 1.03 has another sha256 than the plain dump, but the same code.
         applied, lines, blob = self.prepare(self_dump(text_with(t.MODES['60'])), '60')
         self.assertEqual(applied, '60')
-        self.assertIn('Frame rate: 60 FPS mode, 6 patch writes', lines)
+        self.assertIn('Frame rate: 60 FPS mode, 5 patch writes', lines)
         self.assertEqual(struct.unpack_from('<8sQQ', blob), (b'G3PATCH2', 0, 6))
 
     def test_self_dump_of_another_build_stays_at_30(self):
@@ -62,7 +66,7 @@ class FrameRatePatchTests(unittest.TestCase):
     def test_unreadable_self_stays_at_30(self):
         applied, lines, _ = self.prepare(t.SELF_MAGIC + bytes(60), '60')
         self.assertEqual(applied, '30')
-        self.assertTrue(any(line.startswith('Frame rate: cannot read the SELF') for line in lines))
+        self.assertTrue(any(line.startswith('Patches: cannot read the SELF') for line in lines))
 
     def test_plain_elf_with_another_hash_stays_at_30(self):
         # Unchanged: a plain ELF is only patched when it is the checked 1.03 dump.
@@ -106,7 +110,30 @@ class FrameRatePatchTests(unittest.TestCase):
         self.assertEqual(struct.unpack_from('<8sQQ', blob), (b'G3PATCH2', 0, 0))
         self.assertTrue(any(line.startswith('GPU heap:') for line in lines))
 
-    def test_30_writes_an_empty_patch_file(self):
+    def test_30_fps_applies_the_cloth_guard(self):
+        applied, lines, blob = self.prepare(self_dump(text_with(t.MODES['30'])), '30')
+        self.assertEqual(applied, '30')
+        self.assertIn('Frame rate: 30 FPS mode, 1 patch writes', lines)
+        self.assertEqual(struct.unpack_from('<8sQQ', blob), (b'G3PATCH2', 0, 2))
+
+    def test_720p_resolution_applies_checked_code_and_table_patches(self):
+        names = t.MODES['30'] + t.RESOLUTIONS['720p']
+        applied, lines, blob = self.prepare(self_dump(text_with(names)), '30', '720p')
+        self.assertEqual(applied, '30')
+        self.assertIn('Frame rate: 30 FPS mode, 1 patch writes', lines)
+        self.assertIn('Resolution: 720p, 2 patch writes', lines)
+        self.assertEqual(struct.unpack_from('<8sQQ', blob), (b'G3PATCH2', 0, 4))
+        offset, _length = struct.unpack_from('<QQ', blob, 24)
+        self.assertEqual(offset, t.PATCHES['cloth_null_guard'][0][0] - t.GHIDRA_BASE)
+
+    def test_resolution_patch_requires_the_supported_eboot(self):
+        names = t.MODES['30'] + t.RESOLUTIONS['720p']
+        applied, lines, blob = self.prepare(plain_elf(text_with(names)), '30', '720p')
+        self.assertEqual(applied, '30')
+        self.assertIn('Resolution: 1080p, 0 patch writes', lines)
+        self.assertEqual(struct.unpack_from('<8sQQ', blob), (b'G3PATCH2', 0, 1))
+
+    def test_30_writes_an_empty_patch_file_for_an_unreadable_eboot(self):
         applied, lines, blob = self.prepare(b'', '30')
         self.assertEqual((applied, struct.unpack_from('<8sQQ', blob)), ('30', (b'G3PATCH2', 0, 0)))
 

@@ -94,10 +94,18 @@ DEFAULT_SETTINGS = {
     'mouse_invert_y': False,
     'key_map': {},                 # PS4 button -> 'Key|Mouse Left' (empty: the default)
     'frame_rate': '30',            # 30 | 60 | unlocked (scripts/tlg_patches.py; TLG_FPS wins)
+    'resolution': '1080p',         # 360p | 720p | 1080p | 1440p | 4k (checked EBOOT patch)
+    'draw_pipe': 'auto',           # auto | on | off (TLG_DRAW_PIPE; Advanced)
 }
 FRAME_RATES = ['30', '60', 'unlocked']
-# The frame rate mode prepare() really applied (another eboot build stays at 30).
+RESOLUTIONS = ['360p', '720p', '1080p', '1440p', '4k']
+RESOLUTION_SIZES = {
+    '360p': (640, 360), '720p': (1280, 720), '1080p': (1920, 1080),
+    '1440p': (2560, 1440), '4k': (3840, 2160),
+}
+# The modes really applied (unsupported EBOOTs stay at 30 FPS / native 1080p).
 applied_frame_rate = '30'
+applied_resolution = '1080p'
 # MiB added to the game's Garlic GPU heap by scripts/tlg_patches.py.
 applied_garlic_extra = 0
 
@@ -300,10 +308,17 @@ def frame_rate(settings):
     return os.environ.get('TLG_FPS') or str(settings.get('frame_rate', '30'))
 
 
+def resolution(settings):
+    """The requested render resolution: TLG_RESOLUTION, else the launcher's setting."""
+    return os.environ.get('TLG_RESOLUTION') or str(settings.get('resolution', '1080p'))
+
+
 def prepare(settings, log=print):
     """Builds out/boot-linked.bin, out/content.bin and out/patches.bin (frame rate patches);
     returns the module list that was linked."""
-    global applied_frame_rate, applied_garlic_extra
+    global applied_frame_rate, applied_resolution, applied_garlic_extra
+    applied_frame_rate = '30'
+    applied_resolution = '1080p'
     applied_garlic_extra = 0
     game = settings['game_dir']
     scripts = PORT_DIR / 'scripts'
@@ -315,7 +330,8 @@ def prepare(settings, log=print):
         [*python_command(scripts / 'prepare.py'), game, '--out', str(OUT_DIR)],
         [*python_command(scripts / 'link_modules.py'), game, '--out', str(OUT_DIR), '--modules', *modules],
         [*python_command(scripts / 'content_profile.py'), game, '--out', str(OUT_DIR)],
-        [*python_command(scripts / 'tlg_patches.py'), game, '--out', str(OUT_DIR), '--mode', frame_rate(settings)],
+        [*python_command(scripts / 'tlg_patches.py'), game, '--out', str(OUT_DIR),
+         '--mode', frame_rate(settings), '--resolution', resolution(settings)],
     ]
     for step in steps:
         result = subprocess.run(step, cwd=str(scripts), capture_output=True, text=True,
@@ -327,6 +343,8 @@ def prepare(settings, log=print):
             log(line)
             if line.startswith('Frame rate: ') and line.endswith(' patch writes'):
                 applied_frame_rate = line.split()[2]
+            if line.startswith('Resolution: ') and line.endswith(' patch writes'):
+                applied_resolution = line.split()[1].rstrip(',')
             if line.startswith('Patch garlic: '):
                 words = line.split()
                 applied_garlic_extra = int(words[-3]) - int(words[-5])
@@ -443,6 +461,13 @@ def build_env(settings, extra=None):
     # The present limiter never lets more frames through than the patched engine rate; unlocked
     # flips as soon as a frame is ready (480 Hz vblank) up to the display refresh or the menu limit.
     env['TLG_ENGINE_FPS'] = {'30': '30', '60': '60'}.get(applied_frame_rate, '240')
+    render_width, render_height = RESOLUTION_SIZES.get(applied_resolution, RESOLUTION_SIZES['1080p'])
+    env.setdefault('TLG_INTERNAL_WIDTH', str(render_width))
+    env.setdefault('TLG_INTERNAL_HEIGHT', str(render_height))
+    # Auto leaves the runtime's available-thread heuristic intact; On/Off are explicit overrides.
+    draw_pipe = str(settings.get('draw_pipe', 'auto')).strip().lower()
+    if 'TLG_DRAW_PIPE' not in os.environ and draw_pipe in ('on', 'off'):
+        env['TLG_DRAW_PIPE'] = '1' if draw_pipe == 'on' else '0'
     # 30/60: a 240 Hz vblank shows a late frame ~4 ms late instead of a full 60 Hz vblank later.
     # The present limiter keeps flips at the patched engine rate (driver.cpp PresentThread).
     env.setdefault('TLG_VBLANK_HZ', '0' if applied_frame_rate == 'unlocked' else '240')

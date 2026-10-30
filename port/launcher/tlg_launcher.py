@@ -42,10 +42,24 @@ TEXT = {
     'fps_unlocked': ('Unlocked (up to the display)', 'Livre (até a taxa do monitor)'),
     'fps_hint': ('60/unlocked patch eboot 1.03 in memory; see docs/60fps.md',
                  '60/livre alteram o eboot 1.03 na memória; ver docs/60fps.md'),
+    'resolution': ('Render resolution', 'Resolução de renderização'),
+    'res_360p': ('360p', '360p'),
+    'res_720p': ('720p', '720p'),
+    'res_1080p': ('1080p (native)', '1080p (nativa)'),
+    'res_1440p': ('1440p (2K)', '1440p (2K)'),
+    'res_4k': ('4K (2160p)', '4K (2160p)'),
+    'resolution_hint': ('Patches the checked eboot 1.03 mode table in memory. 1080p is the native PS4 render size; another size is applied only when the expected code and data bytes match.',
+                        'Altera na memória a tabela de modos do eboot 1.03 validado. 1080p é a resolução nativa do PS4; outro tamanho só é aplicado quando os bytes de código e dados esperados coincidem.'),
+    'draw_pipe': ('Multithreaded draw pipeline', 'Pipeline de desenho multithread'),
+    'draw_pipe_auto': ('Automatic (recommended)', 'Automático (recomendado)'),
+    'draw_pipe_on': ('On', 'Ligado'),
+    'draw_pipe_off': ('Off', 'Desligado'),
+    'draw_pipe_hint': ('Auto leaves the runtime heuristic intact (currently based on available host threads). On and Off force TLG_DRAW_PIPE=1 or 0. Applies at the next game start.',
+                       'Automático mantém a heurística do runtime (atualmente baseada nas threads disponíveis). Ligado e Desligado forçam TLG_DRAW_PIPE=1 ou 0. Vale na próxima inicialização do jogo.'),
     'advanced': ('Advanced…', 'Avançado…'),
-    'advanced_title': ('Advanced GPU readback settings', 'Configurações avançadas de leitura da GPU'),
-    'advanced_hint': ('These options control how the CPU receives data written by the GPU. Keep the defaults unless you are diagnosing a specific scene. The readback mode and switches apply when the game starts. GPU readback batch is saved to tlg.ini and can also be changed live in the in-game Performance menu. Graphics presets never change these options. Performance figures below are developer test results, not guarantees for every PC or scene.',
-                      'Estas opções controlam como a CPU recebe os dados escritos pela GPU. Mantenha os padrões, a menos que esteja diagnosticando uma cena específica. O modo de leitura e os interruptores valem ao iniciar o jogo. O lote de leitura é salvo em tlg.ini e também pode ser alterado ao vivo no menu Desempenho do jogo. Os presets gráficos nunca alteram estas opções. Os números de desempenho abaixo vêm dos testes do desenvolvedor e não são garantias para todo PC ou cena.'),
+    'advanced_title': ('Advanced GPU settings', 'Configurações avançadas da GPU'),
+    'advanced_hint': ('These options control how the CPU receives data written by the GPU. Keep the defaults unless you are diagnosing a specific scene. Readback switches, draw-pipeline mode and frame-rate/resolution patches apply when the game starts. GPU readback batch is saved to tlg.ini and can also be changed live in the in-game Performance menu. Graphics presets never change these options. Performance figures below are developer test results, not guarantees for every PC or scene.',
+                      'Estas opções controlam como a CPU recebe os dados escritos pela GPU. Mantenha os padrões, a menos que esteja diagnosticando uma cena específica. Os interruptores de leitura, o modo do pipeline e os patches de FPS/resolução valem ao iniciar o jogo. O lote de leitura é salvo em tlg.ini e também pode ser alterado ao vivo no menu Desempenho do jogo. Os presets gráficos nunca alteram estas opções. Os números de desempenho abaixo vêm dos testes do desenvolvedor e não são garantias para todo PC ou cena.'),
     'gpu_readbacks': ('GPU readback mode', 'Modo de leitura da GPU'),
     'gpu_readbacks_hint': ('How CPU reads of GPU-written memory are synchronized.', 'Como as leituras da CPU de memória escrita pela GPU são sincronizadas.'),
     'gpu_readbacks_why': ('The game reads GPU compute results on the CPU. Precise is required to avoid stale results; Relaxed can return old data, and Off disables readback protection. Keep Precise.',
@@ -341,6 +355,9 @@ class Launcher:
         self.combo(video, 5, 'frame_rate', tlg_run.FRAME_RATES, lambda k: self.t(f'fps_{k}'))
         ttk.Label(video, text=self.t('fps_hint'), foreground='#777', wraplength=320).grid(
             row=6, column=0, columnspan=2, sticky='w')
+        self.combo(video, 7, 'resolution', tlg_run.RESOLUTIONS, lambda k: self.t(f'res_{k}'))
+        ttk.Label(video, text=self.t('resolution_hint'), foreground='#777', wraplength=360,
+                  justify='left').grid(row=8, column=0, columnspan=2, sticky='w', pady=(2, 0))
         ttk.Label(video, text=self.t('vram'), wraplength=220).grid(row=3, column=0, sticky='w', pady=(6, 0))
         vram = tk.IntVar(value=int(self.settings['vram_budget_mb']))
         self.vars['vram_budget_mb'] = vram
@@ -349,7 +366,7 @@ class Launcher:
         spin.grid(row=3, column=1, sticky='w', padx=6, pady=(6, 0))
         spin.bind('<FocusOut>', lambda _: self.changed())
         ttk.Label(video, text=self.t('vram_hint'), foreground='#777', wraplength=360).grid(row=4, column=0, columnspan=2, sticky='w')
-        self.build_filters(video, 7)
+        self.build_filters(video, 9)
 
         log_frame = ttk.LabelFrame(main, text='Log', padding=4)
         log_frame.grid(row=2, column=2, sticky='nsew', **pad)
@@ -644,7 +661,7 @@ class Launcher:
         frame = ttk.Frame(win, padding=12)
         frame.pack(fill='both', expand=True)
         frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(2, weight=1)
+        frame.rowconfigure(3, weight=1)
         ttk.Label(frame, text=self.t('advanced_hint'), wraplength=740, justify='left').grid(
             row=0, column=0, sticky='ew', pady=(0, 8))
 
@@ -672,8 +689,29 @@ class Launcher:
         ttk.Label(mode_frame, text=mode_note, foreground='#777', wraplength=720,
                   justify='left').grid(row=1, column=0, sticky='w', pady=(6, 0))
 
+        draw_frame = ttk.LabelFrame(frame, text=self.t('draw_pipe'), padding=8)
+        draw_frame.grid(row=2, column=0, sticky='ew', pady=(0, 8))
+        draw_modes = ('auto', 'on', 'off')
+        draw_pipe = ttk.Combobox(draw_frame, state='readonly', width=24,
+                                 values=[self.t('draw_pipe_' + value) for value in draw_modes])
+        current_draw_pipe = str(self.settings.get('draw_pipe', 'auto')).lower()
+        draw_pipe.current(draw_modes.index(current_draw_pipe) if current_draw_pipe in draw_modes else 0)
+        draw_pipe.grid(row=0, column=0, sticky='w')
+
+        def save_draw_pipe(_=None):
+            value = draw_modes[draw_pipe.current()]
+            if value == 'auto':
+                self.settings.pop('draw_pipe', None)
+            else:
+                self.settings['draw_pipe'] = value
+            tlg_run.save_settings(self.settings)
+
+        draw_pipe.bind('<<ComboboxSelected>>', save_draw_pipe)
+        ttk.Label(draw_frame, text=self.t('draw_pipe_hint'), foreground='#777', wraplength=720,
+                  justify='left').grid(row=1, column=0, sticky='w', pady=(6, 0))
+
         columns = ttk.Frame(frame)
-        columns.grid(row=2, column=0, sticky='nsew')
+        columns.grid(row=3, column=0, sticky='nsew')
         columns.columnconfigure(0, weight=1)
         columns.columnconfigure(1, weight=1)
         rows = [0, 0]
@@ -713,7 +751,7 @@ class Launcher:
             note(cell, 0, 0, key, default)
 
         batch_frame = ttk.LabelFrame(frame, text=self.t('readback_batch'), padding=8)
-        batch_frame.grid(row=3, column=0, sticky='ew', pady=(8, 0))
+        batch_frame.grid(row=4, column=0, sticky='ew', pady=(8, 0))
         sizes = ('0', '16', '64')
         batch = ttk.Combobox(batch_frame, state='readonly', width=26,
                              values=[self.t('readback_batch_' + value) for value in sizes])
@@ -734,16 +772,18 @@ class Launcher:
         batch.bind('<<ComboboxSelected>>', save_batch)
 
         bottom = ttk.Frame(frame)
-        bottom.grid(row=4, column=0, sticky='ew', pady=(12, 0))
+        bottom.grid(row=5, column=0, sticky='ew', pady=(12, 0))
 
         def reset():
             self.settings.pop('gpu_readbacks', None)
+            self.settings.pop('draw_pipe', None)  # Auto: leave the runtime heuristic in control.
             self.settings.pop('rb_hot', None)  # reset to the backend default (enabled)
             for key, _env_key, _default in flags:
                 self.settings.pop(key, None)
                 variables[key].set(_default)
             tlg_run.save_settings(self.settings)
             mode.current(0)
+            draw_pipe.current(0)
             tlg_run.USER_DIR.mkdir(parents=True, exist_ok=True)
             tlg_run.update_ini(ini_path, {'readback_batch': '0'})
             batch.current(0)

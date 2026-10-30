@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""The Last Guardian frame rate patches (TLG_FPS=30|60|unlocked), written to out/patches.bin.
+"""The Last Guardian frame-rate and render-resolution patches, written to out/patches.bin.
 
 Each patch is a list of {image offset, expected bytes, new bytes} for eboot 1.03 only (sha256
 below, or a SELF dump of it): the expected bytes are checked in eboot.bin before anything is
@@ -9,7 +9,8 @@ apply_patches) applies the file after relocation. Image offsets are eboot virtua
 the Ghidra addresses in the comments (base 0x1000000) are offset + 0x1000000. Research:
 docs/60fps.md.
 
-30 (default) writes an empty patch file: the game runs exactly as on PS4.
+30 FPS keeps the game's frame rate and applies the checked cloth/material null guard.
+Native 1080p does not need a resolution patch.
 """
 import argparse
 import hashlib
@@ -80,6 +81,15 @@ def rip_disp(instruction_end, target):
     return struct.pack('<i', target - instruction_end)
 
 
+def res_bytes(width, height):
+    """Four resolution fields and zero flags in one 0x18-byte mode-table entry."""
+    return struct.pack('<4HQ', width, height, width, height, 0)
+
+
+RES_PRO_ENTRY = bytes.fromhex('90066207200d62070100000000000000')
+RES_NOP_ENTRY = bytes.fromhex('0f856701000081bc2424010000380400000f8656010000')
+
+
 # Patches by name: [(ghidra address, expected bytes, new bytes, what it does)].
 PATCHES = {
     # JsDevice/JsSwapChain init (0x1c4f9f0): sceVideoOutSetFlipRate(handle, 1) -> 0.
@@ -131,15 +141,40 @@ PATCHES = {
          ),
          'cloth update null table/element guard at 0x28c161..0x28c1a4'),
     ],
+    # Mode table (0x18 bytes per entry) at 0x26ec3e8: use WxH, WxH and no checkerboard.
+    # Disable the output-height >1080 branch so the same Pro list works at each render size.
+    'res_nop': [
+        (0x1c4fa6a, RES_NOP_ENTRY, b'\x90' * 23,
+         'CreateDevice: always use the Pro mode list'),
+    ],
+    'res_360p': [
+        (0x26ec3e8, RES_PRO_ENTRY, res_bytes(640, 360), 'default mode -> 640x360'),
+    ],
+    'res_720p': [
+        (0x26ec3e8, RES_PRO_ENTRY, res_bytes(1280, 720), 'default mode -> 1280x720'),
+    ],
+    'res_1440p': [
+        (0x26ec3e8, RES_PRO_ENTRY, res_bytes(2560, 1440), 'default mode -> 2560x1440'),
+    ],
+    'res_4k': [
+        (0x26ec3e8, RES_PRO_ENTRY, res_bytes(3840, 2160), 'default mode -> 3840x2160'),
+    ],
 }
 
 MODES = {
-    '30': [],
+    '30': ['cloth_null_guard'],
     # max_fps_double/max_fps_off are left out: 60 and unlocked were reached without them
     # (game+0x180 is no frame limiter in the tested scenes; its reader is not found yet).
     # TLG_FPS_PATCHES=flip_rate_60,max_fps_off tries them.
     '60': ['flip_rate_60', 'dt_snap_60', 'cloth_null_guard'],
     'unlocked': ['flip_rate_60', 'cloth_null_guard'],
+}
+RESOLUTIONS = {
+    '1080p': [],
+    '360p': ['res_nop', 'res_360p'],
+    '720p': ['res_nop', 'res_720p'],
+    '1440p': ['res_nop', 'res_1440p'],
+    '4k': ['res_nop', 'res_4k'],
 }
 # The engine rate each mode presents at most (TLG_ENGINE_FPS: the overlay's frame limiter and
 # tlg_graphics.h PresentLimit). Unlocked is paced by the present thread (TLG_VBLANK_HZ=0).
@@ -157,7 +192,9 @@ def mode_writes(eboot, names):
     for name in names:
         for address, expected, new, what in PATCHES[name]:
             offset = address - GHIDRA_BASE
-            if not (0 <= offset and offset + len(expected) <= TEXT_SIZE) or len(expected) != len(new):
+            # Patches may target code or mapped read-only data (the resolution table).
+            # checked_offset() validates the actual ELF mapping and exact original bytes.
+            if offset < 0 or len(expected) != len(new):
                 raise ValueError(f'{name}: bad patch entry at {address:#x}')
             try:
                 checked_offset(eboot, address, expected)
@@ -183,64 +220,87 @@ def write_patch_file(path, writes):
     Path(path).write_bytes(blob)
 
 
-def prepare(game_dir, out_dir, mode):
-    """Writes out/patches.bin for the mode; returns (applied mode, log lines).
-    Any problem (other eboot build, unexpected bytes) falls back to 30 FPS without patches."""
+def prepare(game_dir, out_dir, mode, resolution='1080p'):
+    """Writes out/patches.bin; unsupported EBOOTs fall back to 30 FPS / native 1080p."""
     mode = normalize_mode(mode)
+    resolution = (resolution or '1080p').strip().lower()
     lines = []
     if mode not in MODES:
         lines.append(f'Frame rate: unknown TLG_FPS={mode!r}; using 30')
         mode = '30'
-    writes = []
-    # TLG_FPS_PATCHES="a,b" (measurements): these patches instead of the mode's own.
-    names = [n for n in os.environ.get('TLG_FPS_PATCHES', '').split(',') if n in PATCHES] or MODES[mode]
-    if names:
+    if resolution not in RESOLUTIONS:
+        lines.append(f'Resolution: unknown TLG_RESOLUTION={resolution!r}; using 1080p')
+        resolution = '1080p'
+
+    fps_names = [n for n in os.environ.get('TLG_FPS_PATCHES', '').split(',') if n in PATCHES]
+    if not fps_names:
+        fps_names = MODES[mode]
+    resolution_names = RESOLUTIONS[resolution]
+
+    try:
+        raw_eboot = (Path(game_dir) / 'eboot.bin').read_bytes()
+    except OSError as error:
+        raw_eboot = b''
+        lines.append(f'Patches: cannot read eboot.bin ({error})')
+
+    digest = hashlib.sha256(raw_eboot).hexdigest()
+    eboot = raw_eboot
+    patchable = digest == EBOOT_103_SHA256
+    if not patchable and raw_eboot[:4] == SELF_MAGIC:
+        # A SELF dump wraps the same ELF at different file offsets. Actual writes still check
+        # their expected bytes and require a PT_LOAD or PT_SCE_RELRO mapping.
         try:
-            eboot = (Path(game_dir) / 'eboot.bin').read_bytes()
-        except OSError as error:
-            eboot = b''
-            lines.append(f'Frame rate: cannot read eboot.bin ({error})')
-        digest = hashlib.sha256(eboot).hexdigest()
-        usable = digest == EBOOT_103_SHA256
-        if not usable and eboot[:4] == SELF_MAGIC:
-            # A SELF dump of 1.03 (sha256 b7f61057…, #40) wraps the same ELF as the plain
-            # dump the hash is for, at other file offsets: patch the ELF inside (the image
-            # prepare.py hands the loader). mode_writes checks every expected byte, so a SELF
-            # of another build still falls back to 30.
-            try:
-                from prepare import parse_self
-                eboot = bytes(parse_self(eboot)[0])
-                usable = True
-                lines.append(f'Frame rate: eboot.bin is a SELF ({digest[:16]}…), checking the ELF inside')
-            except ValueError as error:
-                lines.append(f'Frame rate: cannot read the SELF eboot.bin ({error})')
-        if not usable:
+            from prepare import parse_self
+            eboot = bytes(parse_self(raw_eboot)[0])
+            patchable = True
+            lines.append(f'Patches: eboot.bin is a SELF ({digest[:16]}…), checking the ELF inside')
+        except ValueError as error:
+            lines.append(f'Patches: cannot read the SELF eboot.bin ({error})')
+
+    fps_writes = []
+    if fps_names:
+        if not patchable:
             lines.append(f'Frame rate: eboot.bin is not v1.03 ({digest[:16]}…): {mode} FPS patches not applied, 30 FPS')
             mode = '30'
         else:
             try:
-                writes = mode_writes(eboot, names)
+                fps_writes = mode_writes(eboot, fps_names)
             except ValueError as error:
                 lines.append(f'Frame rate: {error}: patches not applied, 30 FPS')
-                mode, writes = '30', []
-    # The game's own Garlic heap is always 2816 MiB (larger on Pro); expand it to 4064 MiB
-    # at every resolution. The instruction bytes are checked, so another eboot build is untouched.
+                mode, fps_writes = '30', []
+
+    resolution_writes = []
+    if resolution_names:
+        if not patchable:
+            lines.append(f'Resolution: eboot.bin is not v1.03 ({digest[:16]}…): patches not applied, 1080p')
+            resolution = '1080p'
+        else:
+            try:
+                resolution_writes = mode_writes(eboot, resolution_names)
+            except ValueError as error:
+                lines.append(f'Resolution: {error}: patches not applied, 1080p')
+                resolution, resolution_writes = '1080p', []
+
+    # Keep the existing checked Garlic heap extension independent of FPS/resolution selection.
+    heap_writes = []
     try:
-        heap_eboot = (Path(game_dir) / 'eboot.bin').read_bytes()
+        heap_eboot = eboot
         if heap_eboot[:4] == SELF_MAGIC:
             from prepare import parse_self
             heap_eboot = bytes(parse_self(heap_eboot)[0])
-        heap = garlic_writes(heap_eboot)
-        writes += heap
+        heap_writes = garlic_writes(heap_eboot)
     except (OSError, ValueError) as error:
         lines.append(f'GPU heap: {error}: not applied, 2816 MB')
-    write_patch_file(Path(out_dir) / 'patches.bin', writes)
-    for _, data, what in writes:
-        if what.startswith('GPU heap'):
-            lines.append(f'Patch garlic: {what} ({data.hex()})')
-        else:
-            lines.append(f'Frame rate patch {what} ({data.hex()})')
-    lines.append(f'Frame rate: {mode} FPS mode, {len(writes)} patch writes')
+
+    write_patch_file(Path(out_dir) / 'patches.bin', fps_writes + resolution_writes + heap_writes)
+    for _, data, what in fps_writes:
+        lines.append(f'Frame rate patch {what} ({data.hex()})')
+    lines.append(f'Frame rate: {mode} FPS mode, {len(fps_writes)} patch writes')
+    for _, data, what in resolution_writes:
+        lines.append(f'Resolution patch {what} ({data.hex()})')
+    lines.append(f'Resolution: {resolution}, {len(resolution_writes)} patch writes')
+    for _, data, what in heap_writes:
+        lines.append(f'Patch garlic: {what} ({data.hex()})')
     return mode, lines
 
 
@@ -249,8 +309,9 @@ def main():
     p.add_argument('game_dir')
     p.add_argument('--out', type=Path, required=True)
     p.add_argument('--mode', default='30', help='30, 60 or unlocked')
+    p.add_argument('--resolution', default='1080p', help='360p, 720p, 1080p, 1440p or 4k')
     a = p.parse_args()
-    _, lines = prepare(a.game_dir, a.out, a.mode)
+    _, lines = prepare(a.game_dir, a.out, a.mode, a.resolution)
     print('\n'.join(lines))
 
 
