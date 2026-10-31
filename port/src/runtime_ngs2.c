@@ -497,8 +497,7 @@ static void biquad_design(Biquad *f, uint32_t rate) {
     float w = x < 0.001f ? 0.0062831853f : fminf(x, 0.49987f) * 6.2831855f;
     float q = f->q < 0.0001f ? 0.0001f : fminf(f->q, 32.0f);
     float s = sinf(w), cs = cosf(w);
-    float b0, b1, b2, a0, a1, a2;    switch (f->type) {    case 6: case 7: {   /* low / high shelf, level = linear gain */
-        float A = sqrtf(fmaxf(f->level, 0.0001f)), beta = sqrtf(A) / q * s;
+    float b0, b1, b2, a0, a1, a2;    switch (f->type) {    case 6: case 7: {   /* low / high shelf, level = linear gain */        float A = sqrtf(fmaxf(f->level, 0.0001f)), beta = sqrtf(A) / q * s;
         if (f->type == 6) {
             b0 = A * ((A + 1) - (A - 1) * cs + beta); b1 = 2 * A * ((A - 1) - (A + 1) * cs); b2 = A * ((A + 1) - (A - 1) * cs - beta);
             a0 = (A + 1) + (A - 1) * cs + beta; a1 = -2 * ((A - 1) + (A + 1) * cs); a2 = (A + 1) + (A - 1) * cs - beta;
@@ -997,8 +996,7 @@ static void reverb_run(Reverb *r, uint32_t rate, float data[MAX_CH][MAX_GRAIN], 
     }
     r->primed = 1;}
 /* ---- Chorus and delay (custom rack modules) ---- */
-static void chorus_run(Chorus *ch, uint32_t rate, float data[MAX_CH][MAX_GRAIN], uint32_t channels, uint32_t n) {
-    if (!ch->line) return;
+static void chorus_run(Chorus *ch, uint32_t rate, float data[MAX_CH][MAX_GRAIN], uint32_t channels, uint32_t n) {    if (!ch->line) return;
     uint32_t phases = ch->phases < 1 ? 1 : ch->phases > 4 ? 4 : ch->phases;
     float base = (float)(int)(ch->delay_ms * 0.001f * (float)rate);
     float depth = base * ch->depth, step = ch->rate_hz / (float)rate;
@@ -1223,7 +1221,7 @@ static void guest_free(const Allocator *a, BufferInfo *info) {
 
 /* ---- Exports: system ---- */
 static ABI int32_t ngs2_system_create(const uint8_t *option, const Allocator *allocator, uintptr_t *out) {
-    if (!out) return NGS2_ERR_BUFFER_INFO;
+    if (!out) return NGS2_ERR_BUFFER_ADDRESS;
     System *s = calloc(1, sizeof(*s));
     if (!s) return NGS2_ERR_SYSTEM_MEMORY;
     s->magic = MAGIC_SYSTEM;
@@ -1320,7 +1318,7 @@ static ABI int32_t ngs2_query_buffer(uint32_t rack_id, const void *option, Buffe
 
 static int32_t rack_create(uintptr_t system, uint32_t rack_id, const uint8_t *option, const BufferInfo *buffer,
                            const Allocator *allocator, uintptr_t *out) {
-    if (!out) return NGS2_ERR_BUFFER_INFO;
+    if (!out) return NGS2_ERR_BUFFER_ADDRESS;
     pthread_mutex_lock(&lock);
     System *s = as_system(system);
     if (!s) { pthread_mutex_unlock(&lock); return NGS2_ERR_SYSTEM_HANDLE; }
@@ -1497,8 +1495,7 @@ static void sampler_setup(Voice *v, const ParamHeader *p) {
     if (s->wave_channels > MAX_CH) s->wave_channels = MAX_CH;
     if (!s->rate) s->rate = v->rack->system->rate;    v->channels = s->wave_channels ? s->wave_channels : 1;
     s->pitch = 1.0f;
-    s->env_forward = s->env_release = 0;
-    s->env_level = 1.0f;
+    s->env_forward = s->env_release = 0;    s->env_level = 1.0f;
     s->releasing = 0;
     s->decoded_samples = s->decoded_bytes = s->user = 0;
     s->waveform_pointer = NULL;
@@ -1997,8 +1994,7 @@ static void fifo_fill(Voice *v, uint32_t need) {
             continue;        }
         if ((s->wave == WAVE_ATRAC9 && !s->at9_ok) || (s->wave != WAVE_VAG && s->wave != WAVE_ATRAC9 && !pcm_bytes(s->wave))) {
             s->count = 0;   /* nothing this mixer can decode: the voice ends */
-            s->source_done = 1;
-            break;
+            s->source_done = 1;            break;
         }
         if (!decode_unit(v)) s->source_done = 1;
     }
