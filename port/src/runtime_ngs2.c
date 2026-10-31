@@ -497,8 +497,7 @@ static float mb_to_gain(float mb) { return mb < -10000.0f ? 0.0f : powf(10.0f, m
 static void biquad_design(Biquad *f, uint32_t rate) {
     float *c = f->c;
     f->dirty = 0;
-    if (f->type == 0x20) { memcpy(c, f->direct, sizeof(f->direct)); return; }    if (f->type < 1 || f->type > 10) { c[0] = 1.0f; c[1] = c[2] = c[3] = c[4] = 0.0f; return; }    float x = f->fc / (float)rate;    float w = x < 0.001f ? 0.0062831853f : fminf(x, 0.49987f) * 6.2831855f;    float q = f->q < 0.0001f ? 0.0001f : fminf(f->q, 32.0f);    float s = sinf(w), cs = cosf(w);    float b0, b1, b2, a0, a1, a2;    switch (f->type) {    case 6: case 7: {   /* low / high shelf, level = linear gain */        float A = sqrtf(fmaxf(f->level, 0.0001f)), beta = sqrtf(A) / q * s;        if (f->type == 6) {            b0 = A * ((A + 1) - (A - 1) * cs + beta); b1 = 2 * A * ((A - 1) - (A + 1) * cs); b2 = A * ((A + 1) - (A - 1) * cs - beta);            a0 = (A + 1) + (A - 1) * cs + beta; a1 = -2 * ((A - 1) + (A + 1) * cs); a2 = (A + 1) + (A - 1) * cs - beta;        } else {
-            b0 = A * ((A + 1) + (A - 1) * cs + beta); b1 = -2 * A * ((A - 1) + (A + 1) * cs); b2 = A * ((A + 1) + (A - 1) * cs - beta);
+    if (f->type == 0x20) { memcpy(c, f->direct, sizeof(f->direct)); return; }    if (f->type < 1 || f->type > 10) { c[0] = 1.0f; c[1] = c[2] = c[3] = c[4] = 0.0f; return; }    float x = f->fc / (float)rate;    float w = x < 0.001f ? 0.0062831853f : fminf(x, 0.49987f) * 6.2831855f;    float q = f->q < 0.0001f ? 0.0001f : fminf(f->q, 32.0f);    float s = sinf(w), cs = cosf(w);    float b0, b1, b2, a0, a1, a2;    switch (f->type) {    case 6: case 7: {   /* low / high shelf, level = linear gain */        float A = sqrtf(fmaxf(f->level, 0.0001f)), beta = sqrtf(A) / q * s;        if (f->type == 6) {            b0 = A * ((A + 1) - (A - 1) * cs + beta); b1 = 2 * A * ((A - 1) - (A + 1) * cs); b2 = A * ((A + 1) - (A - 1) * cs - beta);            a0 = (A + 1) + (A - 1) * cs + beta; a1 = -2 * ((A - 1) + (A + 1) * cs); a2 = (A + 1) + (A - 1) * cs - beta;        } else {            b0 = A * ((A + 1) + (A - 1) * cs + beta); b1 = -2 * A * ((A - 1) + (A + 1) * cs); b2 = A * ((A + 1) + (A - 1) * cs - beta);
             a0 = (A + 1) - (A - 1) * cs + beta; a1 = 2 * ((A - 1) - (A + 1) * cs); a2 = (A + 1) - (A - 1) * cs - beta;
         }
         break;
@@ -997,8 +996,7 @@ static void chorus_run(Chorus *ch, uint32_t rate, float data[MAX_CH][MAX_GRAIN],
         float phase = phase0;        uint32_t w = write0;        float *lines = ch->line + (size_t)c * 4 * CHORUS_LINE;
         for (uint32_t i = 0; i < n; ++i) {            float x = data[c][i], in = x, v = 0.0f;
             for (uint32_t k = 0; k < phases; ++k) {                float ph = phase + (float)k / (float)phases;
-                ph -= floorf(ph);
-                float d = base + 1.0f + depth * sinf(6.2831855f * ph);
+                ph -= floorf(ph);                float d = base + 1.0f + depth * sinf(6.2831855f * ph);
                 uint32_t di = (uint32_t)d;
                 float fr = d - (float)di;
                 float *line = lines + (size_t)k * CHORUS_LINE;
@@ -1497,8 +1495,7 @@ static void voice_event(Voice *v, uint32_t event) {
         }
         break;
     case EV_RELEASE:
-        if (!v->sampler) v->stopped = 1;
-        if (v->state != ST_PLAYING) { if (v->state == ST_READY && v->sampler) voice_finish(v); break; }
+        if (!v->sampler) v->stopped = 1;        if (v->state != ST_PLAYING) { if (v->state == ST_READY && v->sampler) voice_finish(v); break; }
         if (v->sampler && v->sampler->env_release) {
             Sampler *s = v->sampler;
             s->releasing = 1;
@@ -1758,23 +1755,33 @@ static ABI int32_t ngs2_voice_control(uintptr_t handle, const ParamHeader *param
     Voice *v = as_voice(handle);
     if (!v) { pthread_mutex_unlock(&lock); return NGS2_ERR_VOICE_HANDLE; }
     uintptr_t cursor = (uintptr_t)params;
-    uintptr_t visited[256];
-    uint32_t count = 0;
+    uintptr_t *visited = NULL;
+    size_t count = 0, capacity = 0;
     int32_t result = NGS2_OK;
     while (cursor) {
         if ((cursor & (sizeof(uint32_t) - 1)) != 0 || cursor > UINTPTR_MAX - sizeof(ParamHeader)) {
             result = NGS2_ERR_VOICE_CONTROL_ADDRESS;
             break;
         }
-        for (uint32_t i = 0; i < count; ++i) {
+        for (size_t i = 0; i < count; ++i) {
             if (visited[i] == cursor) {
                 result = NGS2_ERR_VOICE_CONTROL_CIRCULAR;
                 goto done;
             }
         }
-        if (count == sizeof(visited) / sizeof(visited[0])) {
-            result = NGS2_ERR_VOICE_CONTROL_CIRCULAR;
-            break;
+        if (count == capacity) {
+            size_t new_capacity = capacity ? capacity * 2 : 16;
+            if (new_capacity < capacity || new_capacity > SIZE_MAX / sizeof(*visited)) {
+                result = NGS2_ERR_VOICE_CONTROL_SIZE;
+                break;
+            }
+            uintptr_t *new_visited = realloc(visited, new_capacity * sizeof(*visited));
+            if (!new_visited) {
+                result = NGS2_ERR_SYSTEM_MEMORY;
+                break;
+            }
+            visited = new_visited;
+            capacity = new_capacity;
         }
         visited[count++] = cursor;
         const ParamHeader *h = (const ParamHeader *)cursor;
@@ -1801,8 +1808,13 @@ static ABI int32_t ngs2_voice_control(uintptr_t handle, const ParamHeader *param
             if (cursor > UINTPTR_MAX - distance) { result = NGS2_ERR_VOICE_CONTROL_ADDRESS; break; }
             cursor += distance;
         }
+        if (!cursor) {
+            result = NGS2_ERR_VOICE_CONTROL_ADDRESS;
+            break;
+        }
     }
 done:
+    free(visited);
     pthread_mutex_unlock(&lock);
     return result;
 }
@@ -1997,8 +2009,7 @@ static int decode_unit(Voice *v) {
     s->waveform_pointer = b->data + s->byte;
     fifo_push(s, ch, frames, produced);
     if (!s->out_left) block_end(v);    return 1;
-}
-/* Makes frame `need` available (or marks the source done). */
+}/* Makes frame `need` available (or marks the source done). */
 static void fifo_fill(Voice *v, uint32_t need) {    Sampler *s = v->sampler;    while (s->fifo_len <= need && !s->source_done) {
         if (s->fifo_len + UNIT_FRAMES > FIFO_FRAMES) {
             /* Keep one frame of history before the read position. */
