@@ -497,8 +497,7 @@ static void biquad_design(Biquad *f, uint32_t rate) {
     float w = x < 0.001f ? 0.0062831853f : fminf(x, 0.49987f) * 6.2831855f;
     float q = f->q < 0.0001f ? 0.0001f : fminf(f->q, 32.0f);
     float s = sinf(w), cs = cosf(w);
-    float b0, b1, b2, a0, a1, a2;
-    switch (f->type) {
+    float b0, b1, b2, a0, a1, a2;    switch (f->type) {
     case 6: case 7: {   /* low / high shelf, level = linear gain */
         float A = sqrtf(fmaxf(f->level, 0.0001f)), beta = sqrtf(A) / q * s;
         if (f->type == 6) {
@@ -997,8 +996,7 @@ static void reverb_run(Reverb *r, uint32_t rate, float data[MAX_CH][MAX_GRAIN], 
             data[c][i] = (w0 + (float)i * ws) * y + (d0 + (float)i * ds) * (c < in_channels ? data[c][i] : 0.0f);
         }
     }
-    r->primed = 1;
-}
+    r->primed = 1;}
 
 /* ---- Chorus and delay (custom rack modules) ---- */
 static void chorus_run(Chorus *ch, uint32_t rate, float data[MAX_CH][MAX_GRAIN], uint32_t channels, uint32_t n) {
@@ -1206,9 +1204,17 @@ static int32_t guest_alloc(const Allocator *a, BufferInfo *info, uint64_t size) 
     if (!a || !a->alloc) return NGS2_ERR_BUFFER_ALLOCATOR;
     info->user_data = a->user_data;
     int32_t result = a->alloc(info);
-    if (result) return result; /* Preserve the guest allocator's PS4 error verbatim. */
+    if (result) {
+        if (info->host_buffer && a->free) a->free(info);
+        memset(info, 0, sizeof(*info));
+        return result; /* Preserve the guest allocator's PS4 error verbatim. */
+    }
     if (!info->host_buffer) return NGS2_ERR_BUFFER_ADDRESS;
-    if (info->host_size < size) return NGS2_ERR_BUFFER_SIZE;
+    if (info->host_size < size) {
+        if (a->free) a->free(info);
+        memset(info, 0, sizeof(*info));
+        return NGS2_ERR_BUFFER_SIZE;
+    }
     return NGS2_OK;
 }
 static void guest_free(const Allocator *a, BufferInfo *info) {
@@ -1239,7 +1245,11 @@ static ABI int32_t ngs2_system_create(const uint8_t *option, const Allocator *al
     if (allocator) {
         s->allocator = *allocator;
         int32_t alloc_result = guest_alloc(allocator, &s->buffer, CONTEXT_BUFFER_SIZE);
-        if (alloc_result) { free(s); return alloc_result; }
+        if (alloc_result) {
+            if (s->buffer.host_buffer && allocator->free) allocator->free(&s->buffer);
+            free(s);
+            return alloc_result;
+        }
         s->allocated = 1;
     }
     pthread_mutex_lock(&lock);
@@ -1355,7 +1365,6 @@ static int32_t rack_create(uintptr_t system, uint32_t rack_id, const uint8_t *op
         int32_t alloc_result = guest_alloc(allocator, &r->buffer, CONTEXT_BUFFER_SIZE);
         if (alloc_result) {
             rack_release(r);
-            free(r->voices);
             free(r);
             pthread_mutex_unlock(&lock);
             return alloc_result;
@@ -1380,7 +1389,7 @@ static ABI int32_t ngs2_rack_create_alloc(uintptr_t system, uint32_t rack_id, co
 static ABI int32_t ngs2_rack_destroy(uintptr_t handle, BufferInfo *out) {
     pthread_mutex_lock(&lock);
     Rack *r = as_rack(handle);
-    if (!r) { pthread_mutex_unlock(&lock); return NGS2_ERR_SYSTEM_HANDLE; }
+    if (!r) { pthread_mutex_unlock(&lock); return NGS2_ERR_RACK_HANDLE; }
     System *s = r->system;
     for (Rack **p = &s->racks; *p; p = &(*p)->next) if (*p == r) { *p = r->next; break; }
     unpatch_all(s, r);
@@ -1394,8 +1403,9 @@ static ABI int32_t ngs2_rack_destroy(uintptr_t handle, BufferInfo *out) {
 }
 static ABI int32_t ngs2_voice_handle(uintptr_t rack, uint32_t index, uintptr_t *out) {
     Rack *r = as_rack(rack);
-    if (!r || !out) return NGS2_ERR_SYSTEM_HANDLE;
-    if (index >= r->max_voices) return NGS2_ERR_BUFFER_INFO;
+    if (!r) return NGS2_ERR_RACK_HANDLE;
+    if (!out) return NGS2_ERR_BUFFER_ADDRESS;
+    if (index >= r->max_voices) return (int32_t)0x804A0302;
     *out = voice_handle(r->voices[index]);
     return NGS2_OK;
 }
@@ -1497,8 +1507,7 @@ static void sampler_setup(Voice *v, const ParamHeader *p) {
     s->waveform_pointer = NULL;
     v->paused = 0;
     if (!s->fifo) s->fifo = calloc((size_t)FIFO_FRAMES * MAX_CH, sizeof(float));
-    sampler_clear_blocks(s);
-    sampler_reset_decoder(s);
+    sampler_clear_blocks(s);    sampler_reset_decoder(s);
     v->state = s->wave && s->wave_channels && s->fifo ? ST_READY : ST_FREE;
     if (s->wave && s->wave != WAVE_VAG && s->wave != WAVE_ATRAC9 && (s->wave < WAVE_PCM_U8 || s->wave > WAVE_PCM_F64B)) {
         static uint32_t seen[16]; static unsigned n;
@@ -1998,7 +2007,6 @@ static void fifo_fill(Voice *v, uint32_t need) {
         if (!decode_unit(v)) s->source_done = 1;
     }
 }
-
 /* Envelope: each point moves from the level at its start to `height` over `duration` samples
  * along its curve. After the forward points the level holds (a voice whose forward envelope
  * ends at 0 stops); after the release points the voice ends. */
@@ -2299,7 +2307,8 @@ static void summary(const System *s) {
 static ABI int32_t ngs2_render(uintptr_t handle, const RenderBuffer *buffers, uint32_t count) {
     pthread_mutex_lock(&lock);
     System *s = as_system(handle);
-    if (!s || (count && !buffers)) { pthread_mutex_unlock(&lock); return NGS2_ERR_SYSTEM_HANDLE; }
+    if (!s) { pthread_mutex_unlock(&lock); return NGS2_ERR_SYSTEM_HANDLE; }
+    if (count && !buffers) { pthread_mutex_unlock(&lock); return NGS2_ERR_BUFFER_ADDRESS; }
     uint32_t n = s->grain;
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
