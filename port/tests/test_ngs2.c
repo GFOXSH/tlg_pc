@@ -99,6 +99,8 @@ static Graph graph_new(uint32_t mastering_voices) {
     memcpy(option + 0x20, &voices, 4); memcpy(option + 0x28, &matrices, 4); memcpy(option + 0x2c, &ports, 4);
     CHECK(rack_create(g.system, 0x1000, option, NULL, &g.sampler) == 0, "sampler rack");
     BufferInfo info;
+    uint64_t submixer_option_size = 0x98;
+    memcpy(option, &submixer_option_size, sizeof(submixer_option_size));
     CHECK(query_buffer(0x2000, option, &info) == 0 && info.host_size > 0, "query");
     voices = 1;
     memcpy(option + 0x20, &voices, 4);
@@ -787,10 +789,16 @@ static void test_ps4_api_validation(void) {
     CHECK(info.host_size != sampler_size, "rack query is type-specific");
     CHECK(query_buffer(0x3000, NULL, &info) == 0 && info.host_size == 0x1800, "mastering rack size");
     CHECK(query_buffer(0x2001, NULL, &info) == 0 && info.host_size == 0x3e180, "full-rate reverb size");
-    uint8_t rev_option[0x60] = {0};
-    uint32_t unsupported_reverb_size = 1;
-    memcpy(rev_option + 0x10, &unsupported_reverb_size, sizeof(unsupported_reverb_size));
+    uint8_t rev_option[0x88] = {0};
+    uint64_t rev_option_size = 0x88;
+    uint32_t supported_reverb_size = 1;
+    memcpy(rev_option, &rev_option_size, sizeof(rev_option_size));
+    memcpy(rev_option + 0x34, &supported_reverb_size, sizeof(supported_reverb_size));
+    CHECK(query_buffer(0x2001, rev_option, &info) == 0 && info.host_size == 0x3e180, "supported reverb size");
+    uint32_t unsupported_reverb_size = 0;
+    memcpy(rev_option + 0x34, &unsupported_reverb_size, sizeof(unsupported_reverb_size));
     CHECK(query_buffer(0x2001, rev_option, &info) == (int32_t)0x804A0900, "unsupported reverb size code");
+    CHECK(query_buffer(0x2000, rev_option, &info) == (int32_t)0x804A0081, "invalid rack option size code");
     CHECK(query_buffer(0x7777, NULL, &info) == (int32_t)0x804A0260, "invalid rack id code");
     CHECK(voice_handle(g.sampler, 9999, &voice) == (int32_t)0x804A0302, "invalid voice index code");
 
