@@ -76,6 +76,7 @@ enum { ST_FREE, ST_READY, ST_PLAYING };
 #define FLAG_INUSE 0x1u
 #define FLAG_PLAYING 0x2u
 #define FLAG_PAUSED 0x4u
+#define FLAG_STOPPED 0x8u
 #define FLAG_EMPTY 0x20u
 
 enum {
@@ -252,6 +253,7 @@ struct Voice {
     Dynamics limiter;
     int gain_set; float gain[MAX_CH], gain_last[MAX_CH];
     int stopped;            /* bus: RELEASE/STOP/KILL received (buses never kicked still run) */
+    int stop_transition;    /* REVERB STOP: pending state transition; no reverb processing this grain */
     /* Render order */
     int pending, visited;
 };
@@ -790,6 +792,27 @@ static void reverb_reset_state(Reverb *r) {
     r->dirty = 1;
 }
 
+/* REVERB_SETUP replaces the complete AnyPS5 reverb state and restores SETUP_PARAMS. */
+static void reverb_setup_state(Reverb *r) {
+    r->wet = 1.0f;
+    r->dry = 0.0f;
+    r->room = 0.0f;
+    r->room_hf = 1.0f;
+    r->pattern = 0;
+    r->decay_time = 1.0f;
+    r->decay_hf_ratio = 0.5f;
+    r->reflections = 0.0f;
+    r->reflections_delay = 0.02f;
+    r->reverb = 0.0f;
+    r->reverb_delay = 0.04f;
+    r->diffusion = 100.0f;
+    r->density = 100.0f;
+    r->hf_reference = 5000.0f;
+    r->design_density = NAN;
+    reverb_reset_state(r);
+    r->reset = 1;
+}
+
 static void reverb_design(Reverb *r, uint32_t rate) {
     r->dirty = 0;
     const uint32_t pattern = r->pattern % 8;
@@ -1162,9 +1185,10 @@ static void voice_init(Voice *v, Rack *r, uint32_t index) {
     v->magic = MAGIC_VOICE;
     v->rack = r;
     v->index = index;
-    v->channels = r->kind == KIND_SAMPLER ? 1 : MAX_CH;
+    v->channels = r->kind == KIND_SAMPLER ? 1 : r->kind == KIND_REVERB ? 0 : MAX_CH;
     for (int p = 0; p < MAX_PORTS; ++p) { v->ports[p].volume = 1.0f; v->ports[p].matrix = -1; }
     v->out_channels = MAX_CH;
+    if (r->kind == KIND_REVERB) v->stopped = 1; /* AnyPS5 leaves an unconfigured voice Empty. */
     dynamics_reset(&v->compressor);
     v->compressor.dirty = 1;
     if (r->kind == KIND_MASTERING) {
@@ -1390,6 +1414,7 @@ static void voice_finish(Voice *v) {
     if (v->state == ST_PLAYING) ++stat_finished;
     v->state = ST_FREE;
     v->paused = 0;
+    v->stop_transition = 0;
     if (v->sampler) {
         sampler_clear_blocks(v->sampler);
         v->sampler->releasing = 0;
@@ -1415,6 +1440,7 @@ static void voice_event(Voice *v, uint32_t event) {
     case EV_PLAY:
         if (v->state == ST_FREE && v->sampler) break;          /* no waveform set up */
         v->stopped = 0;
+        v->stop_transition = 0;
         if (v->state != ST_PLAYING) {
             v->state = ST_PLAYING;
             v->paused = 0;
@@ -1439,10 +1465,28 @@ static void voice_event(Voice *v, uint32_t event) {
         } else voice_stop(v);
         break;
     case EV_STOP:
-    case EV_KILL:
-        if (event == EV_KILL && v->reverb) v->reverb->reset = 1;
+        if (v->reverb) {
+            /* AnyPS5 excludes REVERB from IsMixer(): STOP ends rendering immediately,
+             * but deliberately leaves the delay lines intact for a subsequent PLAY. */
+            if (v->state == ST_PLAYING || v->paused) {
+                v->paused = 0;
+                v->stopped = 1;
+                v->stop_transition = 1;
+            }
+            break;
+        }
         if (v->sampler) voice_stop(v);
         else { voice_finish(v); v->state = ST_READY; v->stopped = 1; } /* buses stay set up */
+        break;
+    case EV_KILL:
+        if (v->reverb) {
+            /* PS4 KILL has the same reverb-clear effect as AnyPS5 STOP_IMM/KILL. */
+            v->reverb->reset = 1;
+            v->stop_transition = 0;
+            voice_finish(v);
+            v->stopped = 1;
+        } else if (v->sampler) voice_stop(v);
+        else { voice_finish(v); v->state = ST_READY; v->stopped = 1; }
         break;
     case EV_PAUSE: if (v->state == ST_PLAYING) v->paused = 1; break;
     case EV_RESUME: v->paused = 0; break;
@@ -1648,14 +1692,34 @@ static void apply_param(Voice *v, const ParamHeader *p) {
         case 0x20000004: store_user_fx(v, p); return;
         case 0x20000006: store_filter(v, p); return;
         case 0x20000001: case 0x20000003: case 0x20000005: case 0x20000007: return;
-        case 0x20010000:
+        case 0x20010000: {
+            /* Equivalent to AnyPS5 ResetSetup + Ngs2SetupReverb, using PS4 guest layouts. */
+            for (int port = 0; port < MAX_PORTS; ++port) {
+                memset(&v->ports[port], 0, sizeof(v->ports[port]));
+                v->ports[port].volume = 1.0f;
+                v->ports[port].matrix = -1;
+            }
+            if (v->matrices) memset(v->matrices, 0, (size_t)v->rack->max_matrices * sizeof(*v->matrices));
+            memset(v->filters, 0, sizeof(v->filters));
+            v->user_fx = NULL;
+            memset(v->user_fx_data, 0, sizeof(v->user_fx_data));
+            v->callback = NULL;
+            v->callback_data = 0;
+            v->callback_flags = 0;
+            if (v->input) memset(v->input, 0, (size_t)MAX_CH * MAX_GRAIN * sizeof(float));
+            v->has_input = 0;
+            v->fed = 0;
+            v->peak = 0.0f;
+            v->paused = 0;
+            v->stopped = 1;
+            v->stop_transition = 0;
             v->channels = u32_at(p, 8);
             v->out_channels = u32_at(p, 12);
-            if (!v->channels || v->channels > MAX_CH) v->channels = MAX_CH;
-            if (!v->out_channels || v->out_channels > MAX_CH) v->out_channels = MAX_CH;
-            if (v->state == ST_FREE) v->state = ST_READY;
+            v->state = ST_FREE;
+            if (v->reverb) reverb_setup_state(v->reverb);
             return;
-        case 0x20010001: if (v->reverb && p->size >= 0x40) reverb_set_i3dl2(v->reverb, p, f32_at, u32_at); return;
+        }
+        case 0x20010001: if (v->reverb && p->size >= 0x60) reverb_set_i3dl2(v->reverb, p, f32_at, u32_at); return;
         case 0x30000002: {  /* LFE: enable, cut-off 80/120/240 Hz */
             uint32_t fc = u32_at(p, 12);
             if (fc != 80 && fc != 120 && fc != 240) return;
@@ -1702,6 +1766,10 @@ static int reverb_i3dl2_has_nan(const ParamHeader *p) {
     return 0;
 }
 
+static int reverb_channel_count_valid(uint32_t channels) {
+    return channels == 1 || channels == 2 || channels == 6 || channels == 8;
+}
+
 static ABI int32_t ngs2_voice_control(uintptr_t handle, const ParamHeader *params) {
     pthread_mutex_lock(&lock);
     Voice *v = as_voice(handle);
@@ -1710,7 +1778,15 @@ static ABI int32_t ngs2_voice_control(uintptr_t handle, const ParamHeader *param
     for (int guard = 0; p && guard < 256; ++guard) {
         const ParamHeader *h = (const ParamHeader *)p;
         if (h->size >= sizeof(ParamHeader)) {
-            if (v->rack->kind == KIND_REVERB && h->id == 0x20010001 && h->size >= 0x40 && reverb_i3dl2_has_nan(h)) {
+            if (v->rack->kind == KIND_REVERB && h->id == 0x20010000) {
+                if (h->size < 0x18 || !reverb_channel_count_valid(u32_at(h, 8)) ||
+                    !reverb_channel_count_valid(u32_at(h, 12)) || u32_at(h, 16) != 0) {
+                    pthread_mutex_unlock(&lock);
+                    return NGS2_ERR_ARG;
+                }
+            }
+            if (v->rack->kind == KIND_REVERB && h->id == 0x20010001 &&
+                (h->size < 0x60 || reverb_i3dl2_has_nan(h))) {
                 pthread_mutex_unlock(&lock);
                 return NGS2_ERR_ARG;
             }
@@ -1729,6 +1805,7 @@ static uint32_t voice_flags(const Voice *v) {
     case ST_PLAYING: {
         uint32_t f = FLAG_INUSE | FLAG_PLAYING;
         if (v->paused) f |= FLAG_PAUSED;
+        if (v->stop_transition) f |= FLAG_STOPPED;
         if (v->sampler && v->sampler->source_done && !v->sampler->releasing) f |= FLAG_EMPTY;
         return f;
     }
@@ -2102,6 +2179,14 @@ static void process_bus(Voice *v, uint32_t n) {
     static int reverb_pass = -1, custom_mute = -1;
     if (reverb_pass < 0) { const char *e = env("NGS2_REVERB"); reverb_pass = e && !strcmp(e, "pass"); }
     if (custom_mute < 0) { const char *e = env("NGS2_CUSTOM"); custom_mute = e && !strcmp(e, "mute"); }
+    /* REVERB STOP transitions to Empty without processing a final block (it is not an AnyPS5 mixer). */
+    if (v->stop_transition) {
+        v->stop_transition = 0;
+        voice_finish(v);
+        v->stopped = 1;
+        v->peak = 0.0f;
+        return;
+    }
     /* The traced games kick every bus; one that was never kicked still passes its input. */
     if ((v->state != ST_PLAYING && v->stopped) || v->paused) { v->peak = 0.0f; return; }
     float (*data)[MAX_GRAIN] = (float (*)[MAX_GRAIN])v->input;

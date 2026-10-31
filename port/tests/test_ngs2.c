@@ -38,13 +38,17 @@ static float out8[GRAIN * 8];
 static float out1[GRAIN];
 
 /* ---- Parameter helpers ---- */
-static void param(uintptr_t voice, uint32_t id, const void *body, uint16_t body_size) {
+static int32_t raw_param(uintptr_t voice, uint32_t id, const void *body, uint16_t body_size) {
     uint8_t block[256] = {0};
     uint16_t size = (uint16_t)(8 + body_size);
+    if (size > sizeof(block)) return (int32_t)0x804A0201;
     memcpy(block, &size, 2);
     memcpy(block + 4, &id, 4);
-    memcpy(block + 8, body, body_size);
-    CHECK(voice_control(voice, block) == 0, "VoiceControl 0x%08x", id);
+    if (body_size) memcpy(block + 8, body, body_size);
+    return voice_control(voice, block);
+}
+static void param(uintptr_t voice, uint32_t id, const void *body, uint16_t body_size) {
+    CHECK(raw_param(voice, id, body, body_size) == 0, "VoiceControl 0x%08x", id);
 }
 static void u32s(uintptr_t voice, uint32_t id, uint32_t a, uint32_t b) { uint32_t v[2] = {a, b}; param(voice, id, v, 8); }
 static void event(uintptr_t voice, uint32_t e) { param(voice, 6, &e, 4); }
@@ -589,6 +593,10 @@ static void i3dl2(uintptr_t voice, float wet, float dry, int32_t room, int32_t r
              reflections, refl_delay, reverb, rev_delay, diffusion, density, hf_ref, {0}};
     param(voice, 0x20010001, &p, sizeof(p));
 }
+static void reverb_setup(uintptr_t voice, uint32_t input_channels, uint32_t output_channels) {
+    const uint32_t setup[4] = {input_channels, output_channels, 0, 0};
+    param(voice, 0x20010000, setup, sizeof(setup));
+}
 static void test_reverb(void) {
     for (int pass = 0; pass < 2; ++pass) {
         float decay = pass ? 2.5f : 1.0f;
@@ -596,7 +604,7 @@ static void test_reverb(void) {
         uint8_t option[0x88] = {0};
         uintptr_t rv;
         CHECK(rack_create(g.system, 0x2001, option, NULL, &rv) == 0, "reverb rack");
-        u32s(rv, 0x20010000, 8, 8);
+        reverb_setup(rv, 8, 8);
         i3dl2(rv, 1, 0, 0, 0, 0, decay, 1.0f, -10000, 0.01f, 0, 0.01f, 100, 100, 5000);
         event(rv, 0);
         patch(rv, 0, g.mastering);
@@ -631,6 +639,134 @@ static void test_reverb(void) {
         CHECK(lfe == 0.0 && fc > 0.0, "reverb channels");
         system_destroy(g.system, NULL);
     }
+}
+
+static void test_reverb_setup_validation(void) {
+    Graph g = graph_new(1);
+    uint8_t option[0x88] = {0};
+    uintptr_t rv;
+    CHECK(rack_create(g.system, 0x2001, option, NULL, &rv) == 0, "reverb validation rack");
+
+    static const uint32_t valid[][2] = {{1, 1}, {1, 2}, {2, 6}, {6, 2}, {8, 8}};
+    for (size_t i = 0; i < sizeof(valid) / sizeof(valid[0]); ++i)
+        CHECK(raw_param(rv, 0x20010000, (uint32_t[4]){valid[i][0], valid[i][1], 0, 0}, 16) == 0,
+              "valid reverb layout %u -> %u", valid[i][0], valid[i][1]);
+
+    static const uint32_t invalid[] = {0, 3, 4, 5, 7, 9};
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+        uint32_t setup_in[4] = {invalid[i], 2, 0, 0};
+        uint32_t setup_out[4] = {2, invalid[i], 0, 0};
+        CHECK(raw_param(rv, 0x20010000, setup_in, sizeof(setup_in)) != 0,
+              "reject invalid reverb input channel count %u", invalid[i]);
+        CHECK(raw_param(rv, 0x20010000, setup_out, sizeof(setup_out)) != 0,
+              "reject invalid reverb output channel count %u", invalid[i]);
+    }
+    uint32_t flags[4] = {2, 2, 1, 0};
+    uint32_t short_setup[2] = {8, 8};
+    CHECK(raw_param(rv, 0x20010000, flags, sizeof(flags)) != 0, "reject unsupported reverb setup flags");
+    CHECK(raw_param(rv, 0x20010000, short_setup, sizeof(short_setup)) != 0, "reject truncated reverb setup");
+
+    struct {
+        float wet, dry; int32_t room, room_hf; uint32_t pattern; float decay, ratio;
+        int32_t refl; float refl_delay; int32_t rev; float rev_delay, diffusion, density, hf_ref;
+        uint32_t reserved[8];
+    } bad_i3dl2 = {1, 0, -10000, 0, 0, 1, 0.5f, -10000, 0.02f, -10000, 0.04f, 100, 100, 5000, {0}};
+    bad_i3dl2.decay = NAN;
+    CHECK(raw_param(rv, 0x20010001, &bad_i3dl2, sizeof(bad_i3dl2)) != 0, "reject NaN I3DL2 parameter");
+    CHECK(raw_param(rv, 0x20010001, &bad_i3dl2, 8) != 0, "reject truncated I3DL2 parameter");
+    system_destroy(g.system, NULL);
+}
+
+static float max_abs_interleaved(const float *samples, uint32_t frames, uint32_t channels, uint32_t channel,
+                                 uint32_t begin, uint32_t end) {
+    float maximum = 0.0f;
+    if (end > frames) end = frames;
+    for (uint32_t i = begin; i < end; ++i) {
+        float value = fabsf(samples[(size_t)i * channels + channel]);
+        if (value > maximum) maximum = value;
+    }
+    return maximum;
+}
+
+static void test_reverb_setup_reset(void) {
+    Graph g = graph_new(1);
+    uint8_t option[0x88] = {0};
+    uintptr_t rv;
+    CHECK(rack_create(g.system, 0x2001, option, NULL, &rv) == 0, "reverb setup-reset rack");
+    reverb_setup(rv, 8, 8);
+    i3dl2(rv, 0, 1, 0, 0, 0, 1, 0.5f, -10000, 0.02f, -10000, 0.04f, 100, 100, 5000);
+    patch(rv, 0, g.mastering);
+    event(rv, 0);
+
+    static float signal[48000];
+    for (size_t i = 0; i < sizeof(signal) / sizeof(signal[0]); ++i) signal[i] = 0.5f;
+    Block b = {0, sizeof(signal), 0, 0, 48000, 0, 0};
+    uintptr_t sampler;
+    CHECK(voice_handle(g.sampler, 2, &sampler) == 0, "reverb setup-reset sampler");
+    setup_sampler(sampler, 0x18, 1, 48000, 0);
+    add_blocks(sampler, signal, &b, 1);
+    matrix(sampler, 0, front_left, 8);
+    u32s(sampler, 3, 0, 0);
+    patch(sampler, 0, rv);
+    event(sampler, 0);
+
+    render(&g);
+    CHECK(max_abs_interleaved(out8, GRAIN, 8, 0, 0, GRAIN) > 0.1f,
+          "configured dry path is audible before repeated setup");
+
+    /* A repeated SETUP clears ports and restores the AnyPS5 I3DL2 defaults. */
+    reverb_setup(rv, 8, 8);
+    patch(rv, 0, g.mastering);
+    event(rv, 0);
+    render(&g);
+    CHECK(max_abs_interleaved(out8, GRAIN, 8, 0, 0, GRAIN) == 0.0f,
+          "repeated setup restores default dry/wet and clears stale routing");
+    system_destroy(g.system, NULL);
+}
+
+static void test_reverb_stop_kill(void) {
+    Graph g = graph_new(1);
+    uint8_t option[0x88] = {0};
+    uintptr_t rv;
+    CHECK(rack_create(g.system, 0x2001, option, NULL, &rv) == 0, "reverb lifecycle rack");
+    reverb_setup(rv, 8, 8);
+    i3dl2(rv, 1, 0, 0, 0, 0, 1.0f, 0.5f, -602, 0.015f, -302, 0.022f, 100, 100, 5000);
+    patch(rv, 0, g.mastering);
+    event(rv, 0);
+
+    static float click[480];
+    click[100] = 1.0f;
+    Block b = {0, sizeof(click), 0, 0, 480, 0, 0};
+    uintptr_t sampler;
+    CHECK(voice_handle(g.sampler, 2, &sampler) == 0, "reverb lifecycle sampler");
+    setup_sampler(sampler, 0x18, 1, 48000, 0);
+    add_blocks(sampler, click, &b, 1);
+    matrix(sampler, 0, front_left, 8);
+    u32s(sampler, 3, 0, 0);
+    patch(sampler, 0, rv);
+    event(sampler, 0);
+    for (uint32_t i = 0; i < 32; ++i) render(&g);
+
+    event(rv, 2); /* PS4 KICK_EVENT STOP */
+    CHECK((flags_of(rv) & 0x8u) != 0, "STOP exposes the pending stopped state");
+    render(&g);
+    CHECK(max_abs_interleaved(out8, GRAIN, 8, 0, 0, GRAIN) == 0.0f,
+          "REVERB STOP suppresses the next render block without an output fade");
+    CHECK(flags_of(rv) == 0, "STOP completes and leaves the reverb voice empty");
+
+    event(rv, 0); /* PLAY resumes the preserved delay-line history. */
+    static float resumed[GRAIN * 16];
+    capture(&g, resumed, 16, 0);
+    CHECK(rms(resumed, GRAIN * 16) > 1e-8, "STOP preserves the reverb tail for a later PLAY");
+
+    event(rv, 3); /* PS4 KICK_EVENT KILL */
+    CHECK(flags_of(rv) == 0, "KILL makes the reverb voice empty immediately");
+    event(rv, 0);
+    static float cleared[GRAIN * 4];
+    capture(&g, cleared, 4, 0);
+    CHECK(max_abs_interleaved(cleared, GRAIN * 4, 1, 0, 0, GRAIN * 4) == 0.0f,
+          "KILL clears the reverb history before the next PLAY");
+    system_destroy(g.system, NULL);
 }
 
 static void test_custom(void) {
@@ -732,7 +868,7 @@ static void test_perf(void) {
     }
     for (int i = 0; i < 6; ++i) {
         rack_create(g.system, 0x2001, option, NULL, &revs[i]);
-        u32s(revs[i], 0x20010000, 8, 8);
+        reverb_setup(revs[i], 8, 8);
         i3dl2(revs[i], 1, 0, 0, -167, 2, 3.0f, 0.23f, -1200, 0.125f, 1500, 0.0168f, 100, 95, 3086);
         event(revs[i], 0); patch(revs[i], 0, subs[0]);
         rack_create(g.system, 0x4002, option, NULL, &dels[i]);
@@ -793,6 +929,9 @@ int main(void) {
     test_filters();
     test_dynamics();
     test_reverb();
+    test_reverb_setup_validation();
+    test_reverb_setup_reset();
+    test_reverb_stop_kill();
     test_custom();
     test_envelope_curves();
     test_perf();
