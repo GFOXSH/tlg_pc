@@ -755,6 +755,8 @@ static void test_perf(void) {
     memcpy(option + 0x30, &max_channels, sizeof(max_channels));
     memcpy(option + 0x34, &reverb_size, sizeof(reverb_size));
     for (int i = 0; i < 6; ++i) {
+        option_size = 0x88;
+        memcpy(option, &option_size, sizeof(option_size));
         rack_create(g.system, 0x2001, option, NULL, &revs[i]);
         u32s(revs[i], 0x20010000, 8, 8);
         i3dl2(revs[i], 1, 0, 0, -167, 2, 3.0f, 0.23f, -1200, 0.125f, 1500, 0.0168f, 100, 95, 3086);
