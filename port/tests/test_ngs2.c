@@ -779,6 +779,10 @@ static ABI int32_t fail_guest_allocator(BufferInfo *info) {
     (void)info;
     return (int32_t)-12345;
 }
+static ABI int32_t test_guest_free(BufferInfo *info) {
+    (void)info;
+    return 0;
+}
 static void test_ps4_api_validation(void) {
     Graph g = graph_new(1);
     uintptr_t voice = 0;
@@ -824,7 +828,7 @@ static void test_ps4_api_validation(void) {
     CHECK(voice_state(voice, state, 0x20) == (int32_t)0x804A0A06, "VoiceGetState size code");
     CHECK(voice_state(voice, state, sizeof(state)) == 0, "VoiceGetState documented size");
 
-    struct { TestAllocHandler alloc, free; uintptr_t user_data; } allocator = {fail_guest_allocator, NULL, 0};
+    struct { TestAllocHandler alloc, free; uintptr_t user_data; } allocator = {fail_guest_allocator, test_guest_free, 0};
     uintptr_t failed_system = 0, failed_rack = 0;
     CHECK(system_create(NULL, &allocator, &failed_system) == -12345, "system guest allocator error is propagated");
     uint8_t rack_option[0x98] = {0};
