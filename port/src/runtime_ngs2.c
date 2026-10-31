@@ -497,8 +497,7 @@ static float mb_to_gain(float mb) { return mb < -10000.0f ? 0.0f : powf(10.0f, m
 static void biquad_design(Biquad *f, uint32_t rate) {
     float *c = f->c;
     f->dirty = 0;
-    if (f->type == 0x20) { memcpy(c, f->direct, sizeof(f->direct)); return; }
-    if (f->type < 1 || f->type > 10) { c[0] = 1.0f; c[1] = c[2] = c[3] = c[4] = 0.0f; return; }    float x = f->fc / (float)rate;
+    if (f->type == 0x20) { memcpy(c, f->direct, sizeof(f->direct)); return; }    if (f->type < 1 || f->type > 10) { c[0] = 1.0f; c[1] = c[2] = c[3] = c[4] = 0.0f; return; }    float x = f->fc / (float)rate;
     float w = x < 0.001f ? 0.0062831853f : fminf(x, 0.49987f) * 6.2831855f;    float q = f->q < 0.0001f ? 0.0001f : fminf(f->q, 32.0f);    float s = sinf(w), cs = cosf(w);
     float b0, b1, b2, a0, a1, a2;    switch (f->type) {    case 6: case 7: {   /* low / high shelf, level = linear gain */        float A = sqrtf(fmaxf(f->level, 0.0001f)), beta = sqrtf(A) / q * s;        if (f->type == 6) {            b0 = A * ((A + 1) - (A - 1) * cs + beta); b1 = 2 * A * ((A - 1) - (A + 1) * cs); b2 = A * ((A + 1) - (A - 1) * cs - beta);
             a0 = (A + 1) + (A - 1) * cs + beta; a1 = -2 * ((A - 1) + (A + 1) * cs); a2 = (A + 1) + (A - 1) * cs - beta;
@@ -997,8 +996,7 @@ static void reverb_run(Reverb *r, uint32_t rate, float data[MAX_CH][MAX_GRAIN], 
     }
     r->primed = 1;}
 /* ---- Chorus and delay (custom rack modules) ---- */
-static void chorus_run(Chorus *ch, uint32_t rate, float data[MAX_CH][MAX_GRAIN], uint32_t channels, uint32_t n) {    if (!ch->line) return;    uint32_t phases = ch->phases < 1 ? 1 : ch->phases > 4 ? 4 : ch->phases;    float base = (float)(int)(ch->delay_ms * 0.001f * (float)rate);    float depth = base * ch->depth, step = ch->rate_hz / (float)rate;    float dry = ch->gain * ch->dry, wet = ch->gain * ch->wet;    float phase0 = ch->phase;
-    uint32_t write0 = ch->write;
+static void chorus_run(Chorus *ch, uint32_t rate, float data[MAX_CH][MAX_GRAIN], uint32_t channels, uint32_t n) {    if (!ch->line) return;    uint32_t phases = ch->phases < 1 ? 1 : ch->phases > 4 ? 4 : ch->phases;    float base = (float)(int)(ch->delay_ms * 0.001f * (float)rate);    float depth = base * ch->depth, step = ch->rate_hz / (float)rate;    float dry = ch->gain * ch->dry, wet = ch->gain * ch->wet;    float phase0 = ch->phase;    uint32_t write0 = ch->write;
     for (uint32_t c = 0; c < channels; ++c) {
         if (ch->mask >> c & 1) continue;
         float phase = phase0;        uint32_t w = write0;
@@ -1307,22 +1305,21 @@ static uint64_t rack_option_size(uint32_t rack_id) {
     default: return (rack_id & 0xf000u) == 0x4000u ? 0x4d8 : 0;
     }
 }
-static ABI int32_t ngs2_query_buffer(uint32_t rack_id, const void *option, BufferInfo *out) {
-    if (!out) return NGS2_ERR_OUT_ADDRESS;
-    memset(out, 0, sizeof(*out));
+static int32_t rack_buffer_size(uint32_t rack_id, const void *option, uint64_t *out_size) {
+    if (!out_size) return NGS2_ERR_OUT_ADDRESS;
     const uint64_t expected_option_size = rack_option_size(rack_id);
     if (!expected_option_size) return NGS2_ERR_RACK_ID;
     if (option) {
         uint64_t supplied_option_size = 0;
         memcpy(&supplied_option_size, option, sizeof(supplied_option_size));
-        if (supplied_option_size != expected_option_size) return (int32_t)0x804A0081; /* INVALID_OPTION_SIZE */
+        if (supplied_option_size != expected_option_size) return NGS2_ERR_OPTION_SIZE;
     }
     /* Rack work areas differ by rack family. Reverb's PS4 option tail is:
      * maxChannels at +0x30 and reverbSize at +0x34. The supported SDK size is 1. */
     switch (rack_id) {
-    case RACK_SAMPLER:   out->host_size = 0x1000; break;
-    case RACK_SUBMIXER:  out->host_size = 0x2000; break;
-    case RACK_MASTERING: out->host_size = 0x1800; break;
+    case RACK_SAMPLER:   *out_size = 0x1000; break;
+    case RACK_SUBMIXER:  *out_size = 0x2000; break;
+    case RACK_MASTERING: *out_size = 0x1800; break;
     case RACK_REVERB: {
         uint32_t max_channels = 8, reverb_size = 1;
         if (option) {
@@ -1331,14 +1328,19 @@ static ABI int32_t ngs2_query_buffer(uint32_t rack_id, const void *option, Buffe
         }
         if (!max_channels || max_channels > MAX_CH) return NGS2_ERR_NUM_CHANNELS;
         if (reverb_size != 1) return NGS2_ERR_REVERB_SIZE;
-        out->host_size = 0x3e180;
+        *out_size = 0x3e180;
         break;
     }
     default:
-        out->host_size = 0x8000;
+        *out_size = 0x8000;
         break;
     }
     return NGS2_OK;
+}
+static ABI int32_t ngs2_query_buffer(uint32_t rack_id, const void *option, BufferInfo *out) {
+    if (!out) return NGS2_ERR_OUT_ADDRESS;
+    memset(out, 0, sizeof(*out));
+    return rack_buffer_size(rack_id, option, &out->host_size);
 }
 
 static int32_t rack_create(uintptr_t system, uint32_t rack_id, const uint8_t *option, const BufferInfo *buffer,
@@ -1380,10 +1382,28 @@ static int32_t rack_create(uintptr_t system, uint32_t rack_id, const uint8_t *op
         pthread_mutex_unlock(&lock);
         return NGS2_ERR_SYSTEM_MEMORY;
     }
-    if (buffer) r->buffer = *buffer;
+    uint64_t required_buffer_size = CONTEXT_BUFFER_SIZE;
+    if (allocator || buffer) {
+        int32_t size_result = rack_buffer_size(rack_id, option, &required_buffer_size);
+        if (size_result) {
+            rack_release(r);
+            free(r);
+            pthread_mutex_unlock(&lock);
+            return size_result;
+        }
+    }
+    if (buffer) {
+        if (buffer->host_size < required_buffer_size) {
+            rack_release(r);
+            free(r);
+            pthread_mutex_unlock(&lock);
+            return NGS2_ERR_BUFFER_SIZE;
+        }
+        r->buffer = *buffer;
+    }
     if (allocator) {
         r->allocator = *allocator;
-        int32_t alloc_result = guest_alloc(allocator, &r->buffer, CONTEXT_BUFFER_SIZE);
+        int32_t alloc_result = guest_alloc(allocator, &r->buffer, required_buffer_size);
         if (alloc_result) {
             rack_release(r);
             free(r);
@@ -1497,8 +1517,7 @@ static void voice_event(Voice *v, uint32_t event) {
             s->releasing = 1;
             s->env_segment = s->env_forward;
             s->env_position = 0;            s->env_start = s->env_level;        } else voice_stop(v);
-        break;
-    case EV_STOP:
+        break;    case EV_STOP:
     case EV_KILL:        if (v->sampler) voice_stop(v);
         else { voice_finish(v); v->state = ST_READY; v->stopped = 1; } /* buses stay set up */
         break;
@@ -1997,8 +2016,7 @@ static int decode_unit(Voice *v) {
     if (!s->out_left) block_end(v);    return 1;
 }
 /* Makes frame `need` available (or marks the source done). */
-static void fifo_fill(Voice *v, uint32_t need) {    Sampler *s = v->sampler;
-    while (s->fifo_len <= need && !s->source_done) {
+static void fifo_fill(Voice *v, uint32_t need) {    Sampler *s = v->sampler;    while (s->fifo_len <= need && !s->source_done) {
         if (s->fifo_len + UNIT_FRAMES > FIFO_FRAMES) {
             /* Keep one frame of history before the read position. */
             uint32_t drop = (uint32_t)s->pos;
