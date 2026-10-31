@@ -827,7 +827,9 @@ static void test_ps4_api_validation(void) {
     uint8_t bad_system_option[0x40] = {0};
     uint64_t system_option_size = 0x40;
     memcpy(bad_system_option, &system_option_size, sizeof(system_option_size));
-    uint32_t invalid_rate = 12345;
+    uint32_t valid_max_grain = 512, valid_num_grain = 256, invalid_rate = 12345;
+    memcpy(bad_system_option + 0x1c, &valid_max_grain, sizeof(valid_max_grain));
+    memcpy(bad_system_option + 0x20, &valid_num_grain, sizeof(valid_num_grain));
     memcpy(bad_system_option + 0x24, &invalid_rate, sizeof(invalid_rate));
     CHECK(system_create(bad_system_option, NULL, &failed_system) == (int32_t)0x804A0201, "invalid system sample rate code");
     uint32_t valid_rate = 48000, invalid_grain = 65;
