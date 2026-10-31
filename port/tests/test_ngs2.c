@@ -825,6 +825,8 @@ static void test_ps4_api_validation(void) {
     uintptr_t failed_system = 0;
     CHECK(system_create(NULL, &allocator, &failed_system) == -12345, "guest allocator error is propagated");
     uint8_t bad_system_option[0x40] = {0};
+    uint64_t system_option_size = 0x40;
+    memcpy(bad_system_option, &system_option_size, sizeof(system_option_size));
     uint32_t invalid_rate = 12345;
     memcpy(bad_system_option + 0x24, &invalid_rate, sizeof(invalid_rate));
     CHECK(system_create(bad_system_option, NULL, &failed_system) == (int32_t)0x804A0201, "invalid system sample rate code");
