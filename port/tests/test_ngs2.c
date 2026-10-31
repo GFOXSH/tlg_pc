@@ -823,8 +823,13 @@ static void test_ps4_api_validation(void) {
     CHECK(voice_state(voice, state, sizeof(state)) == 0, "VoiceGetState documented size");
 
     struct { TestAllocHandler alloc, free; uintptr_t user_data; } allocator = {fail_guest_allocator, NULL, 0};
-    uintptr_t failed_system = 0;
-    CHECK(system_create(NULL, &allocator, &failed_system) == -12345, "guest allocator error is propagated");
+    uintptr_t failed_system = 0, failed_rack = 0;
+    CHECK(system_create(NULL, &allocator, &failed_system) == -12345, "system guest allocator error is propagated");
+    uint8_t rack_option[0x98] = {0};
+    uint64_t rack_option_size = 0x98;
+    memcpy(rack_option, &rack_option_size, sizeof(rack_option_size));
+    CHECK(rack_create_alloc(g.system, 0x2000, rack_option, &allocator, &failed_rack) == -12345,
+          "rack guest allocator error is propagated");
     uint8_t bad_system_option[0x40] = {0};
     uint64_t system_option_size = 0x40;
     memcpy(bad_system_option, &system_option_size, sizeof(system_option_size));
