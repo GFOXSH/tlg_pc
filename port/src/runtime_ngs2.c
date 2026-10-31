@@ -497,8 +497,7 @@ static float mb_to_gain(float mb) { return mb < -10000.0f ? 0.0f : powf(10.0f, m
 static void biquad_design(Biquad *f, uint32_t rate) {
     float *c = f->c;
     f->dirty = 0;
-    if (f->type == 0x20) { memcpy(c, f->direct, sizeof(f->direct)); return; }    if (f->type < 1 || f->type > 10) { c[0] = 1.0f; c[1] = c[2] = c[3] = c[4] = 0.0f; return; }    float x = f->fc / (float)rate;    float w = x < 0.001f ? 0.0062831853f : fminf(x, 0.49987f) * 6.2831855f;    float q = f->q < 0.0001f ? 0.0001f : fminf(f->q, 32.0f);    float s = sinf(w), cs = cosf(w);
-    float b0, b1, b2, a0, a1, a2;    switch (f->type) {    case 6: case 7: {   /* low / high shelf, level = linear gain */        float A = sqrtf(fmaxf(f->level, 0.0001f)), beta = sqrtf(A) / q * s;        if (f->type == 6) {            b0 = A * ((A + 1) - (A - 1) * cs + beta); b1 = 2 * A * ((A - 1) - (A + 1) * cs); b2 = A * ((A + 1) - (A - 1) * cs - beta);
+    if (f->type == 0x20) { memcpy(c, f->direct, sizeof(f->direct)); return; }    if (f->type < 1 || f->type > 10) { c[0] = 1.0f; c[1] = c[2] = c[3] = c[4] = 0.0f; return; }    float x = f->fc / (float)rate;    float w = x < 0.001f ? 0.0062831853f : fminf(x, 0.49987f) * 6.2831855f;    float q = f->q < 0.0001f ? 0.0001f : fminf(f->q, 32.0f);    float s = sinf(w), cs = cosf(w);    float b0, b1, b2, a0, a1, a2;    switch (f->type) {    case 6: case 7: {   /* low / high shelf, level = linear gain */        float A = sqrtf(fmaxf(f->level, 0.0001f)), beta = sqrtf(A) / q * s;        if (f->type == 6) {            b0 = A * ((A + 1) - (A - 1) * cs + beta); b1 = 2 * A * ((A - 1) - (A + 1) * cs); b2 = A * ((A + 1) - (A - 1) * cs - beta);
             a0 = (A + 1) + (A - 1) * cs + beta; a1 = -2 * ((A - 1) + (A + 1) * cs); a2 = (A + 1) + (A - 1) * cs - beta;
         } else {
             b0 = A * ((A + 1) + (A - 1) * cs + beta); b1 = -2 * A * ((A - 1) + (A + 1) * cs); b2 = A * ((A + 1) + (A - 1) * cs - beta);
@@ -997,8 +996,7 @@ static void reverb_run(Reverb *r, uint32_t rate, float data[MAX_CH][MAX_GRAIN], 
 /* ---- Chorus and delay (custom rack modules) ---- */
 static void chorus_run(Chorus *ch, uint32_t rate, float data[MAX_CH][MAX_GRAIN], uint32_t channels, uint32_t n) {    if (!ch->line) return;    uint32_t phases = ch->phases < 1 ? 1 : ch->phases > 4 ? 4 : ch->phases;    float base = (float)(int)(ch->delay_ms * 0.001f * (float)rate);    float depth = base * ch->depth, step = ch->rate_hz / (float)rate;    float dry = ch->gain * ch->dry, wet = ch->gain * ch->wet;    float phase0 = ch->phase;    uint32_t write0 = ch->write;
     for (uint32_t c = 0; c < channels; ++c) {        if (ch->mask >> c & 1) continue;
-        float phase = phase0;        uint32_t w = write0;
-        float *lines = ch->line + (size_t)c * 4 * CHORUS_LINE;
+        float phase = phase0;        uint32_t w = write0;        float *lines = ch->line + (size_t)c * 4 * CHORUS_LINE;
         for (uint32_t i = 0; i < n; ++i) {
             float x = data[c][i], in = x, v = 0.0f;
             for (uint32_t k = 0; k < phases; ++k) {
@@ -1189,7 +1187,7 @@ static void voice_free(Voice *v) {
 static int32_t guest_alloc(const Allocator *a, BufferInfo *info, uint64_t size) {
     memset(info, 0, sizeof(*info));
     info->host_size = size;
-    if (!a || !a->alloc) return NGS2_ERR_BUFFER_ALLOCATOR;
+    if (!a || !a->alloc || !a->free) return NGS2_ERR_BUFFER_ALLOCATOR;
     info->user_data = a->user_data;
     int32_t result = a->alloc(info);
     if (result) {
@@ -1497,8 +1495,7 @@ static void voice_event(Voice *v, uint32_t event) {
         v->stopped = 0;
         if (v->state != ST_PLAYING) {            v->state = ST_PLAYING;
             v->paused = 0;
-            if (v->sampler) {
-                envelope_start(v->sampler);
+            if (v->sampler) {                envelope_start(v->sampler);
                 v->sampler->fade_in = 1;
                 v->sampler->stopping = 0;
                 for (int p = 0; p < MAX_PORTS; ++p) v->ports[p].primed = 0;
@@ -1997,8 +1994,7 @@ static int decode_unit(Voice *v) {
     } else {        uint32_t bytes = pcm_bytes(s->wave), frame = bytes * ch;
         if (frame && s->byte + frame <= b->size) {
             uint32_t n = (b->size - s->byte) / frame;
-            if (n > UNIT_FRAMES) n = UNIT_FRAMES;
-            for (uint32_t i = 0; i < n; ++i)
+            if (n > UNIT_FRAMES) n = UNIT_FRAMES;            for (uint32_t i = 0; i < n; ++i)
                 for (uint32_t c = 0; c < MAX_CH; ++c)
                     frames[i * MAX_CH + c] = c < ch ? pcm_sample(s->wave, b->data + s->byte + i * frame + c * bytes) : 0.0f;
             produced = n; used = n * frame;
