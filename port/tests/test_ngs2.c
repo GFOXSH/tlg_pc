@@ -95,6 +95,8 @@ static Graph graph_new(uint32_t mastering_voices) {
     memcpy(sys_option, &size, 8); memcpy(sys_option + 0x1c, &max_grain, 4); memcpy(sys_option + 0x20, &grain, 4); memcpy(sys_option + 0x24, &rate, 4);
     CHECK(system_create(sys_option, NULL, &g.system) == 0, "system");
     uint8_t option[0xa8] = {0};
+    uint64_t rack_option_size = 0xa8;
+    memcpy(option, &rack_option_size, sizeof(rack_option_size));
     uint32_t voices = 8, matrices = 1, ports = 8;
     memcpy(option + 0x20, &voices, 4); memcpy(option + 0x28, &matrices, 4); memcpy(option + 0x2c, &ports, 4);
     CHECK(rack_create(g.system, 0x1000, option, NULL, &g.sampler) == 0, "sampler rack");
@@ -107,6 +109,8 @@ static Graph graph_new(uint32_t mastering_voices) {
     CHECK(rack_create(g.system, 0x2000, option, &info, &g.submixer) == 0, "submixer rack");
     voices = mastering_voices;
     memcpy(option + 0x20, &voices, 4);
+    rack_option_size = 0x88;
+    memcpy(option, &rack_option_size, sizeof(rack_option_size));
     CHECK(rack_create_alloc(g.system, 0x3000, option, NULL, &g.mastering) == 0, "mastering rack");
     CHECK(voice_handle(g.mastering, 0, &g.master_voice) == 0, "mastering voice");
     CHECK(g.master_voice == g.mastering, "voice 0 handle is the rack handle");
@@ -376,6 +380,8 @@ static ABI int32_t half_fx(UserFxContext *c) {
 static void test_fx_and_order(void) {
     Graph g = graph_new(2);
     uint8_t option[0x98] = {0};
+    uint64_t option_size = 0x98;
+    memcpy(option, &option_size, sizeof(option_size));
     uint32_t one = 1;
     memcpy(option + 0x20, &one, 4); memcpy(option + 0x28, &one, 4); memcpy(option + 0x2c, &one, 4);
     uintptr_t b, a;
@@ -596,6 +602,11 @@ static void test_reverb(void) {
         float decay = pass ? 2.5f : 1.0f;
         Graph g = graph_new(1);
         uint8_t option[0x88] = {0};
+        uint64_t option_size = 0x88;
+        uint32_t max_channels = 8, reverb_size = 1;
+        memcpy(option, &option_size, sizeof(option_size));
+        memcpy(option + 0x30, &max_channels, sizeof(max_channels));
+        memcpy(option + 0x34, &reverb_size, sizeof(reverb_size));
         uintptr_t rv;
         CHECK(rack_create(g.system, 0x2001, option, NULL, &rv) == 0, "reverb rack");
         u32s(rv, 0x20010000, 8, 8);
@@ -638,6 +649,8 @@ static void test_reverb(void) {
 static void test_custom(void) {
     Graph g = graph_new(1);
     uint8_t option[0x4d8] = {0};
+    uint64_t option_size = 0x4d8;
+    memcpy(option, &option_size, sizeof(option_size));
     uintptr_t cr;
     CHECK(rack_create(g.system, 0x4002, option, NULL, &cr) == 0, "custom rack");
     u32s(cr, 0x40020000, 8, 8);
@@ -716,12 +729,16 @@ static void test_envelope_curves(void) {
 static void test_perf(void) {
     Graph g = graph_new(1);
     uint8_t option[0x4d8] = {0};
+    uint64_t option_size = 0xa8;
+    memcpy(option, &option_size, sizeof(option_size));
     uint32_t voices = 256;
     memcpy(option + 0x20, &voices, 4);
     uintptr_t sampler;
     rack_create(g.system, 0x1000, option, NULL, &sampler);
     voices = 1;
     memcpy(option + 0x20, &voices, 4);
+    option_size = 0x98;
+    memcpy(option, &option_size, sizeof(option_size));
     uintptr_t subs[40], revs[6], dels[6];
     struct { uint32_t flags; float thr, ratio, knee, attack, release, level; uint32_t reserved; } comp = {0, 0.1f, 0.5f, 0, 0.01f, 0.1f, 1, 0};
     for (int i = 0; i < 40; ++i) {
@@ -732,11 +749,18 @@ static void test_perf(void) {
         param(subs[i], 0x20000002, &comp, sizeof(comp));
         patch(subs[i], 0, i ? subs[i / 2] : g.mastering);
     }
+    option_size = 0x88;
+    memcpy(option, &option_size, sizeof(option_size));
+    uint32_t max_channels = 8, reverb_size = 1;
+    memcpy(option + 0x30, &max_channels, sizeof(max_channels));
+    memcpy(option + 0x34, &reverb_size, sizeof(reverb_size));
     for (int i = 0; i < 6; ++i) {
         rack_create(g.system, 0x2001, option, NULL, &revs[i]);
         u32s(revs[i], 0x20010000, 8, 8);
         i3dl2(revs[i], 1, 0, 0, -167, 2, 3.0f, 0.23f, -1200, 0.125f, 1500, 0.0168f, 100, 95, 3086);
         event(revs[i], 0); patch(revs[i], 0, subs[0]);
+        option_size = 0x4d8;
+        memcpy(option, &option_size, sizeof(option_size));
         rack_create(g.system, 0x4002, option, NULL, &dels[i]);
         u32s(dels[i], 0x40020000, 8, 8); event(dels[i], 0); patch(dels[i], 0, revs[i]);
         struct { float dry, wet, gain, feedback, lowpass; uint32_t taps; float tap[16]; float in_gain[8]; uint32_t mask, flags; } d;
