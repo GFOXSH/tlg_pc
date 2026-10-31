@@ -243,7 +243,6 @@ struct Voice {
     /* Buses */
     float *input;           /* MAX_CH planar channels of MAX_GRAIN */
     int has_input;
-    int fed;                /* something was mixed into the input this render */
     Dynamics compressor;
     Reverb *reverb;
     Chorus *chorus;
@@ -1717,7 +1716,6 @@ static void apply_param(Voice *v, const ParamHeader *p) {
             v->callback_flags = 0;
             if (v->input) memset(v->input, 0, (size_t)MAX_CH * MAX_GRAIN * sizeof(float));
             v->has_input = 0;
-            v->fed = 0;
             v->peak = 0.0f;
             v->paused = 0;
             v->stopped = 1;
@@ -2144,7 +2142,7 @@ static void mix_port(const Voice *src, Port *port, float in[MAX_CH][MAX_GRAIN], 
         }
     }
     port->primed = 1;
-    if (any) dst->has_input = dst->fed = 1;
+    if (any) dst->has_input = 1;
 }
 /* Sends through every patched port; filters at location 2 + p shape only what port p sends. */
 static float port_scratch[MAX_CH][MAX_GRAIN];
@@ -2158,13 +2156,13 @@ static void send_ports(Voice *v, float data[MAX_CH][MAX_GRAIN], uint32_t n) {
         } else mix_port(v, port, data, n);
     }
 }
-static void call_user_fx(Voice *v, float data[MAX_CH][MAX_GRAIN], uint32_t n) {
+static void call_user_fx(Voice *v, float data[MAX_CH][MAX_GRAIN], uint32_t num_channels, uint32_t n) {
     static int enabled = -1;
     if (enabled < 0) enabled = env_flag("NGS2_USERFX", 1);
     if (!v->user_fx || !enabled) return;
     float *channels[MAX_CH];
     for (int c = 0; c < MAX_CH; ++c) channels[c] = data[c];
-    UserFxContext context = {channels, v->user_fx_data[0], v->user_fx_data[1], v->user_fx_data[2], 0, v->channels, n, v->rack->system->rate};
+    UserFxContext context = {channels, v->user_fx_data[0], v->user_fx_data[1], v->user_fx_data[2], 0, num_channels, n, v->rack->system->rate};
     UserFxHandler handler = v->user_fx;
     ++stat_user_fx;
     /* Guest code may take its own locks while another game thread holding them waits in
@@ -2173,6 +2171,13 @@ static void call_user_fx(Voice *v, float data[MAX_CH][MAX_GRAIN], uint32_t n) {
     handler(&context);
     pthread_mutex_lock(&lock);
 }
+static int has_nonzero_samples(float data[MAX_CH][MAX_GRAIN], uint32_t channels, uint32_t n) {
+    for (uint32_t c = 0; c < channels; ++c)
+        for (uint32_t k = 0; k < n; ++k)
+            if (data[c][k] != 0.0f) return 1;
+    return 0;
+}
+
 static float peak_of(float data[MAX_CH][MAX_GRAIN], uint32_t channels, uint32_t n) {
     float peak = 0.0f;
     for (uint32_t c = 0; c < channels; ++c) for (uint32_t k = 0; k < n; ++k) { float a = fabsf(data[c][k]); if (a > peak) peak = a; }
@@ -2189,7 +2194,7 @@ static void process_sampler(Voice *v, uint32_t n) {
     if (!written) { v->peak = 0.0f; return; }
     /* Console order: filters (location 0), envelope, user FX, filters (1), ports (2 + p). */
     filters_run(v, 0, scratch, scratch, v->channels, n);
-    call_user_fx(v, scratch, n);
+    call_user_fx(v, scratch, v->channels, n);
     filters_run(v, 1, scratch, scratch, v->channels, n);
     v->peak = peak_of(scratch, v->channels, n);
     send_ports(v, scratch, n);
@@ -2213,20 +2218,20 @@ static void process_bus(Voice *v, uint32_t n) {
     uint32_t kind = v->rack->kind, rate = v->rack->system->rate;
     uint32_t out_ch = kind == KIND_REVERB || kind == KIND_CUSTOM ? v->out_channels : v->channels;
     int reverb_audible = 1;
-    /* A submixer with nothing mixed in this render stays silent (its filter tails are far
-     * below audibility); reverb and custom racks keep running for their tails. */
-    if (kind == KIND_SUBMIXER && !v->fed) { v->peak = 0.0f; return; }
+    /* Active buses process every grain, including zero-filled input. Legacy USER_FX may
+     * synthesize output from silence, so input availability must not skip this chain. */
     v->has_input = 1;   /* effects write into the input buffer: clear it before the next render */
     switch (kind) {
     case KIND_REVERB:
         if (!reverb_pass && v->reverb) {
             reverb_audible = reverb_run(v->reverb, rate, data, v->channels, v->out_channels, n);
         } else {
-            reverb_audible = 0;
-            for (uint32_t c = 0; c < out_ch && !reverb_audible; ++c)
-                for (uint32_t i = 0; i < n; ++i)
-                    if (data[c][i] != 0.0f) { reverb_audible = 1; break; }
+            reverb_audible = has_nonzero_samples(data, out_ch, n);
         }
+        /* RenderVoice runs legacy USER_FX after Reverb and derives hasSamples from its
+         * final output. This lets the callback create audio or suppress the reverb tail. */
+        call_user_fx(v, data, out_ch, n);
+        reverb_audible = has_nonzero_samples(data, out_ch, n);
         break;
     case KIND_CUSTOM:
         if (custom_mute) { for (uint32_t c = 0; c < MAX_CH; ++c) memset(data[c], 0, n * sizeof(float)); break; }
@@ -2254,15 +2259,14 @@ static void process_bus(Voice *v, uint32_t n) {
     default:   /* submixer: filters, compressor, user FX, filters */
         filters_run(v, 0, data, data, v->channels, n);
         dynamics_run(&v->compressor, rate, data, v->channels, n);
-        call_user_fx(v, data, n);
+        call_user_fx(v, data, v->channels, n);
         filters_run(v, 1, data, data, v->channels, n);
         break;
     }
     v->peak = peak_of(data, out_ch, n);
     uint32_t saved = v->channels;
     v->channels = out_ch;   /* ports see the bus output width */
-    /* AnyPS5 sets hasSamples from ProcessReverb before USER_FX/filters and only
-     * forwards the voice when the wet/dry output contained a non-zero sample. */
+    /* Reverb forwarding follows RenderVoice's hasSamples result after legacy USER_FX. */
     if (kind != KIND_REVERB || reverb_audible) send_ports(v, data, n);
     v->channels = saved;
 }
@@ -2372,7 +2376,6 @@ static ABI int32_t ngs2_render(uintptr_t handle, const RenderBuffer *buffers, ui
         if (r->kind == KIND_SAMPLER) continue;
         for (uint32_t i = 0; i < r->max_voices; ++i) {
             Voice *v = r->voices[i];
-            v->fed = 0;
             if (v->has_input) { for (int c = 0; c < MAX_CH; ++c) memset(v->input + (size_t)c * MAX_GRAIN, 0, n * sizeof(float)); v->has_input = 0; }
         }
     }
