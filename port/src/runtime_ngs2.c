@@ -497,8 +497,7 @@ static float mb_to_gain(float mb) { return mb < -10000.0f ? 0.0f : powf(10.0f, m
 static void biquad_design(Biquad *f, uint32_t rate) {
     float *c = f->c;
     f->dirty = 0;
-    if (f->type == 0x20) { memcpy(c, f->direct, sizeof(f->direct)); return; }    if (f->type < 1 || f->type > 10) { c[0] = 1.0f; c[1] = c[2] = c[3] = c[4] = 0.0f; return; }    float x = f->fc / (float)rate;    float w = x < 0.001f ? 0.0062831853f : fminf(x, 0.49987f) * 6.2831855f;    float q = f->q < 0.0001f ? 0.0001f : fminf(f->q, 32.0f);    float s = sinf(w), cs = cosf(w);    float b0, b1, b2, a0, a1, a2;    switch (f->type) {    case 6: case 7: {   /* low / high shelf, level = linear gain */        float A = sqrtf(fmaxf(f->level, 0.0001f)), beta = sqrtf(A) / q * s;        if (f->type == 6) {            b0 = A * ((A + 1) - (A - 1) * cs + beta); b1 = 2 * A * ((A - 1) - (A + 1) * cs); b2 = A * ((A + 1) - (A - 1) * cs - beta);            a0 = (A + 1) + (A - 1) * cs + beta; a1 = -2 * ((A - 1) + (A + 1) * cs); a2 = (A + 1) + (A - 1) * cs - beta;
-        } else {
+    if (f->type == 0x20) { memcpy(c, f->direct, sizeof(f->direct)); return; }    if (f->type < 1 || f->type > 10) { c[0] = 1.0f; c[1] = c[2] = c[3] = c[4] = 0.0f; return; }    float x = f->fc / (float)rate;    float w = x < 0.001f ? 0.0062831853f : fminf(x, 0.49987f) * 6.2831855f;    float q = f->q < 0.0001f ? 0.0001f : fminf(f->q, 32.0f);    float s = sinf(w), cs = cosf(w);    float b0, b1, b2, a0, a1, a2;    switch (f->type) {    case 6: case 7: {   /* low / high shelf, level = linear gain */        float A = sqrtf(fmaxf(f->level, 0.0001f)), beta = sqrtf(A) / q * s;        if (f->type == 6) {            b0 = A * ((A + 1) - (A - 1) * cs + beta); b1 = 2 * A * ((A - 1) - (A + 1) * cs); b2 = A * ((A + 1) - (A - 1) * cs - beta);            a0 = (A + 1) + (A - 1) * cs + beta; a1 = -2 * ((A - 1) + (A + 1) * cs); a2 = (A + 1) + (A - 1) * cs - beta;        } else {
             b0 = A * ((A + 1) + (A - 1) * cs + beta); b1 = -2 * A * ((A - 1) + (A + 1) * cs); b2 = A * ((A + 1) + (A - 1) * cs - beta);
             a0 = (A + 1) - (A - 1) * cs + beta; a1 = 2 * ((A - 1) - (A + 1) * cs); a2 = (A + 1) - (A - 1) * cs - beta;
         }
@@ -997,8 +996,7 @@ static void chorus_run(Chorus *ch, uint32_t rate, float data[MAX_CH][MAX_GRAIN],
     for (uint32_t c = 0; c < channels; ++c) {        if (ch->mask >> c & 1) continue;
         float phase = phase0;        uint32_t w = write0;        float *lines = ch->line + (size_t)c * 4 * CHORUS_LINE;
         for (uint32_t i = 0; i < n; ++i) {            float x = data[c][i], in = x, v = 0.0f;
-            for (uint32_t k = 0; k < phases; ++k) {
-                float ph = phase + (float)k / (float)phases;
+            for (uint32_t k = 0; k < phases; ++k) {                float ph = phase + (float)k / (float)phases;
                 ph -= floorf(ph);
                 float d = base + 1.0f + depth * sinf(6.2831855f * ph);
                 uint32_t di = (uint32_t)d;
@@ -1378,14 +1376,12 @@ static int32_t rack_create(uintptr_t system, uint32_t rack_id, const uint8_t *op
         return NGS2_ERR_SYSTEM_MEMORY;
     }
     uint64_t required_buffer_size = CONTEXT_BUFFER_SIZE;
-    if (allocator || buffer) {
-        int32_t size_result = rack_buffer_size(rack_id, option, &required_buffer_size);
-        if (size_result) {
-            rack_release(r);
-            free(r);
-            pthread_mutex_unlock(&lock);
-            return size_result;
-        }
+    int32_t size_result = rack_buffer_size(rack_id, option, &required_buffer_size);
+    if (size_result) {
+        rack_release(r);
+        free(r);
+        pthread_mutex_unlock(&lock);
+        return size_result;
     }
     if (buffer) {
         if (buffer->host_size < required_buffer_size) {
@@ -1497,8 +1493,7 @@ static void voice_event(Voice *v, uint32_t event) {
             if (v->sampler) {                envelope_start(v->sampler);
                 v->sampler->fade_in = 1;
                 v->sampler->stopping = 0;                for (int p = 0; p < MAX_PORTS; ++p) v->ports[p].primed = 0;
-                ++stat_plays;
-            }
+                ++stat_plays;            }
         }
         break;
     case EV_RELEASE:
@@ -1997,8 +1992,7 @@ static int decode_unit(Voice *v) {
                     frames[i * MAX_CH + c] = c < ch ? pcm_sample(s->wave, b->data + s->byte + i * frame + c * bytes) : 0.0f;
             produced = n; used = n * frame;        }
     }
-    if (!produced) { block_end(v); return 1; }   /* data exhausted before the sample count */
-    s->byte += used;
+    if (!produced) { block_end(v); return 1; }   /* data exhausted before the sample count */    s->byte += used;
     s->decoded_bytes += used;
     s->waveform_pointer = b->data + s->byte;
     fifo_push(s, ch, frames, produced);
