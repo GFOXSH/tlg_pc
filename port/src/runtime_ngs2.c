@@ -59,7 +59,10 @@
 #define NGS2_ERR_VOICE_CONTROL_ADDRESS ((int32_t)0x804A0309)
 #define NGS2_ERR_VOICE_CONTROL_SIZE ((int32_t)0x804A030a)
 #define NGS2_ERR_VOICE_CONTROL_CIRCULAR ((int32_t)0x804A030b)
+#define NGS2_ERR_MAX_GRAIN_SAMPLES ((int32_t)0x804A0050)
+#define NGS2_ERR_NUM_GRAIN_SAMPLES ((int32_t)0x804A0051)
 #define NGS2_ERR_SAMPLE_RATE ((int32_t)0x804A0201)
+#define NGS2_ERR_OPTION_SIZE ((int32_t)0x804A0081)
 #define NGS2_ERR_BUFFER_INFO ((int32_t)0x804A0206)
 #define NGS2_ERR_BUFFER_ADDRESS ((int32_t)0x804A0207)
 #define NGS2_ERR_BUFFER_SIZE ((int32_t)0x804A0209)
@@ -497,8 +500,7 @@ static void biquad_design(Biquad *f, uint32_t rate) {
     float w = x < 0.001f ? 0.0062831853f : fminf(x, 0.49987f) * 6.2831855f;
     float q = f->q < 0.0001f ? 0.0001f : fminf(f->q, 32.0f);
     float s = sinf(w), cs = cosf(w);
-    float b0, b1, b2, a0, a1, a2;    switch (f->type) {    case 6: case 7: {   /* low / high shelf, level = linear gain */        float A = sqrtf(fmaxf(f->level, 0.0001f)), beta = sqrtf(A) / q * s;        if (f->type == 6) {
-            b0 = A * ((A + 1) - (A - 1) * cs + beta); b1 = 2 * A * ((A - 1) - (A + 1) * cs); b2 = A * ((A + 1) - (A - 1) * cs - beta);
+    float b0, b1, b2, a0, a1, a2;    switch (f->type) {    case 6: case 7: {   /* low / high shelf, level = linear gain */        float A = sqrtf(fmaxf(f->level, 0.0001f)), beta = sqrtf(A) / q * s;        if (f->type == 6) {            b0 = A * ((A + 1) - (A - 1) * cs + beta); b1 = 2 * A * ((A - 1) - (A + 1) * cs); b2 = A * ((A + 1) - (A - 1) * cs - beta);
             a0 = (A + 1) + (A - 1) * cs + beta; a1 = -2 * ((A - 1) + (A + 1) * cs); a2 = (A + 1) + (A - 1) * cs - beta;
         } else {
             b0 = A * ((A + 1) + (A - 1) * cs + beta); b1 = -2 * A * ((A - 1) + (A + 1) * cs); b2 = A * ((A + 1) + (A - 1) * cs - beta);
@@ -997,8 +999,7 @@ static void reverb_run(Reverb *r, uint32_t rate, float data[MAX_CH][MAX_GRAIN], 
 /* ---- Chorus and delay (custom rack modules) ---- */
 static void chorus_run(Chorus *ch, uint32_t rate, float data[MAX_CH][MAX_GRAIN], uint32_t channels, uint32_t n) {    if (!ch->line) return;
     uint32_t phases = ch->phases < 1 ? 1 : ch->phases > 4 ? 4 : ch->phases;    float base = (float)(int)(ch->delay_ms * 0.001f * (float)rate);
-    float depth = base * ch->depth, step = ch->rate_hz / (float)rate;
-    float dry = ch->gain * ch->dry, wet = ch->gain * ch->wet;
+    float depth = base * ch->depth, step = ch->rate_hz / (float)rate;    float dry = ch->gain * ch->dry, wet = ch->gain * ch->wet;
     float phase0 = ch->phase;
     uint32_t write0 = ch->write;
     for (uint32_t c = 0; c < channels; ++c) {
@@ -1225,17 +1226,28 @@ static ABI int32_t ngs2_system_create(const uint8_t *option, const Allocator *al
     s->magic = MAGIC_SYSTEM;
     s->grain = 256; s->max_grain = 512; s->rate = 48000;
     if (option) {
+        uint64_t option_size = 0;
+        memcpy(&option_size, option, sizeof(option_size));
+        if (option_size != 0x40) { free(s); return NGS2_ERR_OPTION_SIZE; }
         uint32_t v;
         memcpy(&v, option + 0x1c, 4); if (v) s->max_grain = v;
         memcpy(&v, option + 0x20, 4); if (v) s->grain = v;
         memcpy(&v, option + 0x24, 4); if (v) s->rate = v;
     }
-    if (s->rate != 32000 && s->rate != 44100 && s->rate != 48000 &&
-        s->rate != 88200 && s->rate != 96000 && s->rate != 176400 && s->rate != 192000) {
+    if (s->max_grain < 64 || s->max_grain > MAX_GRAIN || (s->max_grain & 63u)) {
+        free(s);
+        return NGS2_ERR_MAX_GRAIN_SAMPLES;
+    }
+    if (s->grain < 64 || s->grain > MAX_GRAIN || (s->grain & 63u)) {
+        free(s);
+        return NGS2_ERR_NUM_GRAIN_SAMPLES;
+    }
+    if (s->rate != 11025 && s->rate != 12000 && s->rate != 22050 && s->rate != 24000 &&
+        s->rate != 44100 && s->rate != 48000 && s->rate != 88200 && s->rate != 96000 &&
+        s->rate != 176400 && s->rate != 192000) {
         free(s);
         return NGS2_ERR_SAMPLE_RATE;
     }
-    if (s->grain > MAX_GRAIN) s->grain = MAX_GRAIN;
     if (allocator) {
         s->allocator = *allocator;
         int32_t alloc_result = guest_alloc(allocator, &s->buffer, CONTEXT_BUFFER_SIZE);
@@ -1498,7 +1510,6 @@ static void voice_event(Voice *v, uint32_t event) {
     default: note("unknown event %u", event); break;
     }
 }
-
 static void sampler_setup(Voice *v, const ParamHeader *p) {
     Sampler *s = v->sampler;
     s->wave = u32_at(p, 8);
@@ -1997,8 +2008,7 @@ static void fifo_fill(Voice *v, uint32_t need) {
         if (s->fifo_len + UNIT_FRAMES > FIFO_FRAMES) {
             /* Keep one frame of history before the read position. */
             uint32_t drop = (uint32_t)s->pos;
-            drop = drop > 1 ? drop - 1 : 0;
-            if (!drop) break;
+            drop = drop > 1 ? drop - 1 : 0;            if (!drop) break;
             memmove(s->fifo, s->fifo + (size_t)drop * MAX_CH, (size_t)(s->fifo_len - drop) * MAX_CH * sizeof(float));
             s->fifo_len -= drop;
             s->pos -= drop;
