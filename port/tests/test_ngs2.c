@@ -801,6 +801,7 @@ static void test_ps4_api_validation(void) {
     CHECK(query_buffer(0x2001, rev_option, &info) == (int32_t)0x804A0900, "unsupported reverb size code");
     CHECK(query_buffer(0x2000, rev_option, &info) == (int32_t)0x804A0081, "invalid rack option size code");
     CHECK(query_buffer(0x7777, NULL, &info) == (int32_t)0x804A0260, "invalid rack id code");
+    CHECK(query_buffer(0x2000, NULL, NULL) == (int32_t)0x804A0053, "invalid output address code");
     CHECK(voice_handle(g.sampler, 9999, &voice) == (int32_t)0x804A0302, "invalid voice index code");
 
     CHECK(voice_handle(g.sampler, 1, &voice) == 0, "voice for validation tests");
@@ -819,6 +820,7 @@ static void test_ps4_api_validation(void) {
     CHECK(voice_control(voice, (const uint8_t *)malformed + 1) == (int32_t)0x804A0309, "unaligned VoiceControl address code");
 
     uint8_t state[0x30];
+    CHECK(voice_state(voice, NULL, sizeof(state)) == (int32_t)0x804A0053, "VoiceGetState output address code");
     CHECK(voice_state(voice, state, 0x20) == (int32_t)0x804A0A06, "VoiceGetState size code");
     CHECK(voice_state(voice, state, sizeof(state)) == 0, "VoiceGetState documented size");
 
