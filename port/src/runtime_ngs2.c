@@ -48,10 +48,25 @@
 #include <xmmintrin.h>
 #include "third_party/LibAtrac9/C/src/libatrac9.h"
 
+/* PS4 libSceNgs2 error domains. 0x804A0201 is SAMPLE_RATE, not ARG. */
 #define NGS2_OK 0
-#define NGS2_ERR_HANDLE ((int32_t)0x804A0230)
-#define NGS2_ERR_ARG ((int32_t)0x804A0201)
-#define NGS2_ERR_MEMORY ((int32_t)0x804A0050)
+#define NGS2_ERR_SYSTEM_MEMORY ((int32_t)0x8002000c) /* SCE_KERNEL_ERROR_ENOMEM */
+#define NGS2_ERR_SYSTEM_HANDLE ((int32_t)0x804A0230)
+#define NGS2_ERR_RACK_ID ((int32_t)0x804A0260)
+#define NGS2_ERR_RACK_HANDLE ((int32_t)0x804A0261)
+#define NGS2_ERR_VOICE_HANDLE ((int32_t)0x804A0300)
+#define NGS2_ERR_VOICE_CONTROL_ID ((int32_t)0x804A0308)
+#define NGS2_ERR_VOICE_CONTROL_ADDRESS ((int32_t)0x804A0309)
+#define NGS2_ERR_VOICE_CONTROL_SIZE ((int32_t)0x804A030a)
+#define NGS2_ERR_VOICE_CONTROL_CIRCULAR ((int32_t)0x804A030b)
+#define NGS2_ERR_SAMPLE_RATE ((int32_t)0x804A0201)
+#define NGS2_ERR_BUFFER_INFO ((int32_t)0x804A0206)
+#define NGS2_ERR_BUFFER_ADDRESS ((int32_t)0x804A0207)
+#define NGS2_ERR_BUFFER_SIZE ((int32_t)0x804A0209)
+#define NGS2_ERR_BUFFER_ALLOCATOR ((int32_t)0x804A020a)
+#define NGS2_ERR_BUFFER_EMPTY ((int32_t)0x804A020c)
+#define NGS2_ERR_REVERB_SIZE ((int32_t)0x804A0900)
+#define NGS2_ERR_VOICE_STATE_SIZE ((int32_t)0x804A0a06)
 
 #define MAGIC_SYSTEM UINT32_C(0x4e325359)
 #define MAGIC_RACK UINT32_C(0x4e325241)
@@ -497,8 +512,7 @@ static void biquad_design(Biquad *f, uint32_t rate) {
     }
     case 8: {           /* peaking EQ */
         float A = sqrtf(fmaxf(f->level, 0.0001f)), alpha = s / (2 * q);
-        b0 = 1 + alpha * A; b1 = -2 * cs; b2 = 1 - alpha * A; a0 = 1 + alpha / A; a1 = -2 * cs; a2 = 1 - alpha / A;
-        break;
+        b0 = 1 + alpha * A; b1 = -2 * cs; b2 = 1 - alpha * A; a0 = 1 + alpha / A; a1 = -2 * cs; a2 = 1 - alpha / A;        break;
     }
     case 9:             /* first-order low-pass */
         b0 = b1 = s; b2 = 0; a0 = s + cs + 1; a1 = s - cs - 1; a2 = 0;
@@ -997,8 +1011,7 @@ static void chorus_run(Chorus *ch, uint32_t rate, float data[MAX_CH][MAX_GRAIN],
     uint32_t write0 = ch->write;
     for (uint32_t c = 0; c < channels; ++c) {
         if (ch->mask >> c & 1) continue;
-        float phase = phase0;
-        uint32_t w = write0;
+        float phase = phase0;        uint32_t w = write0;
         float *lines = ch->line + (size_t)c * 4 * CHORUS_LINE;
         for (uint32_t i = 0; i < n; ++i) {
             float x = data[c][i], in = x, v = 0.0f;
@@ -1083,7 +1096,7 @@ static uint32_t rack_kind(uint32_t id) {
     case RACK_SUBMIXER: return KIND_SUBMIXER;
     case RACK_REVERB: return KIND_REVERB;
     case RACK_MASTERING: return KIND_MASTERING;
-    default: return (id & 0xf000) == 0x4000 ? KIND_CUSTOM : KIND_SUBMIXER;
+    default: return (id & 0xf000) == 0x4000 ? KIND_CUSTOM : UINT32_MAX;
     }
 }
 static System *as_system(uintptr_t handle) {
@@ -1187,13 +1200,16 @@ static void voice_free(Voice *v) {
 
 /* Guest allocator: ask for a small context buffer so the game's accounting sees the object.
  * The mixer itself lives in host memory. */
-static void guest_alloc(const Allocator *a, BufferInfo *info, uint64_t size) {
+static int32_t guest_alloc(const Allocator *a, BufferInfo *info, uint64_t size) {
     memset(info, 0, sizeof(*info));
     info->host_size = size;
-    if (!a || !a->alloc) return;
+    if (!a || !a->alloc) return NGS2_ERR_BUFFER_ALLOCATOR;
     info->user_data = a->user_data;
-    int32_t r = a->alloc(info);
-    if (r) note("guest allocator returned 0x%08x", (uint32_t)r);
+    int32_t result = a->alloc(info);
+    if (result) return result; /* Preserve the guest allocator's PS4 error verbatim. */
+    if (!info->host_buffer) return NGS2_ERR_BUFFER_ADDRESS;
+    if (info->host_size < size) return NGS2_ERR_BUFFER_SIZE;
+    return NGS2_OK;
 }
 static void guest_free(const Allocator *a, BufferInfo *info) {
     if (a && a->free && info->host_buffer) a->free(info);
@@ -1203,9 +1219,9 @@ static void guest_free(const Allocator *a, BufferInfo *info) {
 
 /* ---- Exports: system ---- */
 static ABI int32_t ngs2_system_create(const uint8_t *option, const Allocator *allocator, uintptr_t *out) {
-    if (!out) return NGS2_ERR_ARG;
+    if (!out) return NGS2_ERR_BUFFER_INFO;
     System *s = calloc(1, sizeof(*s));
-    if (!s) return NGS2_ERR_MEMORY;
+    if (!s) return NGS2_ERR_SYSTEM_MEMORY;
     s->magic = MAGIC_SYSTEM;
     s->grain = 256; s->max_grain = 512; s->rate = 48000;
     if (option) {
@@ -1214,8 +1230,18 @@ static ABI int32_t ngs2_system_create(const uint8_t *option, const Allocator *al
         memcpy(&v, option + 0x20, 4); if (v) s->grain = v;
         memcpy(&v, option + 0x24, 4); if (v) s->rate = v;
     }
+    if (s->rate != 32000 && s->rate != 44100 && s->rate != 48000 &&
+        s->rate != 88200 && s->rate != 96000 && s->rate != 176400 && s->rate != 192000) {
+        free(s);
+        return NGS2_ERR_SAMPLE_RATE;
+    }
     if (s->grain > MAX_GRAIN) s->grain = MAX_GRAIN;
-    if (allocator) { s->allocator = *allocator; guest_alloc(allocator, &s->buffer, CONTEXT_BUFFER_SIZE); s->allocated = 1; }
+    if (allocator) {
+        s->allocator = *allocator;
+        int32_t alloc_result = guest_alloc(allocator, &s->buffer, CONTEXT_BUFFER_SIZE);
+        if (alloc_result) { free(s); return alloc_result; }
+        s->allocated = 1;
+    }
     pthread_mutex_lock(&lock);
     s->next = systems; systems = s;
     pthread_mutex_unlock(&lock);
@@ -1247,7 +1273,7 @@ static void unpatch_all(System *s, const Rack *gone) {
 static ABI int32_t ngs2_system_destroy(uintptr_t handle, BufferInfo *out) {
     pthread_mutex_lock(&lock);
     System *s = as_system(handle);
-    if (!s) { pthread_mutex_unlock(&lock); return NGS2_ERR_HANDLE; }
+    if (!s) { pthread_mutex_unlock(&lock); return NGS2_ERR_SYSTEM_HANDLE; }
     for (System **p = &systems; *p; p = &(*p)->next) if (*p == s) { *p = s->next; break; }
     while (s->racks) { Rack *r = s->racks; s->racks = r->next; rack_release(r); r->magic = 0; free(r); }
     if (out) *out = s->buffer;
@@ -1260,25 +1286,43 @@ static ABI int32_t ngs2_system_destroy(uintptr_t handle, BufferInfo *out) {
 
 /* ---- Exports: racks ---- */
 static ABI int32_t ngs2_query_buffer(uint32_t rack_id, const void *option, BufferInfo *out) {
-    (void)rack_id; (void)option;
-    if (!out) return NGS2_ERR_ARG;
+    if (!out) return NGS2_ERR_BUFFER_INFO;
     memset(out, 0, sizeof(*out));
-    out->host_size = CONTEXT_BUFFER_SIZE;
+    /* RackQueryBufferSize returns rack-specific work sizes, not one generic context size.
+     * The TLG reverb trace uses reverbSize=0 (full-rate) and reports 0x3e180 bytes. */
+    switch (rack_id) {
+    case RACK_SAMPLER:   out->host_size = 0x1000; break;
+    case RACK_SUBMIXER:  out->host_size = 0x2000; break;
+    case RACK_MASTERING: out->host_size = 0x1800; break;
+    case RACK_REVERB: {
+        uint32_t reverb_size = 0;
+        if (option) memcpy(&reverb_size, (const uint8_t *)option + 0x10, sizeof(reverb_size));
+        /* Only the full-rate work layout is currently implemented by this HLE. */
+        if (reverb_size != 0) return NGS2_ERR_REVERB_SIZE;
+        out->host_size = 0x3e180;
+        break;
+    }
+    default:
+        if ((rack_id & 0xf000u) == 0x4000u) out->host_size = 0x8000;
+        else return NGS2_ERR_RACK_ID;
+        break;
+    }
     return NGS2_OK;
 }
 
 static int32_t rack_create(uintptr_t system, uint32_t rack_id, const uint8_t *option, const BufferInfo *buffer,
                            const Allocator *allocator, uintptr_t *out) {
-    if (!out) return NGS2_ERR_ARG;
+    if (!out) return NGS2_ERR_BUFFER_INFO;
     pthread_mutex_lock(&lock);
     System *s = as_system(system);
-    if (!s) { pthread_mutex_unlock(&lock); return NGS2_ERR_HANDLE; }
+    if (!s) { pthread_mutex_unlock(&lock); return NGS2_ERR_SYSTEM_HANDLE; }
     Rack *r = calloc(1, sizeof(*r));
-    if (!r) { pthread_mutex_unlock(&lock); return NGS2_ERR_MEMORY; }
+    if (!r) { pthread_mutex_unlock(&lock); return NGS2_ERR_SYSTEM_MEMORY; }
     r->magic = MAGIC_RACK;
     r->system = s;
     r->id = rack_id;
     r->kind = rack_kind(rack_id);
+    if (r->kind == UINT32_MAX) { free(r); pthread_mutex_unlock(&lock); return NGS2_ERR_RACK_ID; }
     r->max_voices = r->kind == KIND_SAMPLER ? 256 : 1;
     r->max_ports = r->kind == KIND_SAMPLER ? 8 : 4;
     r->max_matrices = 1;
@@ -1303,10 +1347,21 @@ static int32_t rack_create(uintptr_t system, uint32_t rack_id, const uint8_t *op
         if (r->voices) for (uint32_t i = 0; i < r->max_voices; ++i) if (r->voices[i]) { voice_free(r->voices[i]); free(r->voices[i]); }
         free(r->voices); free(r);
         pthread_mutex_unlock(&lock);
-        return NGS2_ERR_MEMORY;
+        return NGS2_ERR_SYSTEM_MEMORY;
     }
     if (buffer) r->buffer = *buffer;
-    if (allocator) { r->allocator = *allocator; guest_alloc(allocator, &r->buffer, CONTEXT_BUFFER_SIZE); r->allocated = 1; }
+    if (allocator) {
+        r->allocator = *allocator;
+        int32_t alloc_result = guest_alloc(allocator, &r->buffer, CONTEXT_BUFFER_SIZE);
+        if (alloc_result) {
+            rack_release(r);
+            free(r->voices);
+            free(r);
+            pthread_mutex_unlock(&lock);
+            return alloc_result;
+        }
+        r->allocated = 1;
+    }
     /* Appended: creation order is a reasonable tie-break for the render order. */
     Rack **tail = &s->racks;
     while (*tail) tail = &(*tail)->next;
@@ -1325,7 +1380,7 @@ static ABI int32_t ngs2_rack_create_alloc(uintptr_t system, uint32_t rack_id, co
 static ABI int32_t ngs2_rack_destroy(uintptr_t handle, BufferInfo *out) {
     pthread_mutex_lock(&lock);
     Rack *r = as_rack(handle);
-    if (!r) { pthread_mutex_unlock(&lock); return NGS2_ERR_HANDLE; }
+    if (!r) { pthread_mutex_unlock(&lock); return NGS2_ERR_SYSTEM_HANDLE; }
     System *s = r->system;
     for (Rack **p = &s->racks; *p; p = &(*p)->next) if (*p == r) { *p = r->next; break; }
     unpatch_all(s, r);
@@ -1339,8 +1394,8 @@ static ABI int32_t ngs2_rack_destroy(uintptr_t handle, BufferInfo *out) {
 }
 static ABI int32_t ngs2_voice_handle(uintptr_t rack, uint32_t index, uintptr_t *out) {
     Rack *r = as_rack(rack);
-    if (!r || !out) return NGS2_ERR_HANDLE;
-    if (index >= r->max_voices) return NGS2_ERR_ARG;
+    if (!r || !out) return NGS2_ERR_SYSTEM_HANDLE;
+    if (index >= r->max_voices) return NGS2_ERR_BUFFER_INFO;
     *out = voice_handle(r->voices[index]);
     return NGS2_OK;
 }
@@ -1497,8 +1552,7 @@ static void store_filter(Voice *v, const ParamHeader *p) {
     f->type = type;
     f->mask = u32_at(p, 20) & 0xff;
     f->fc = f32_at(p, 24); f->q = f32_at(p, 28); f->level = f32_at(p, 32);
-    for (int i = 0; i < 5; ++i) f->direct[i] = f32_at(p, 24 + 4 * (uint32_t)i);
-    f->dirty = 1;
+    for (int i = 0; i < 5; ++i) f->direct[i] = f32_at(p, 24 + 4 * (uint32_t)i);    f->dirty = 1;
 }
 static void store_compressor(Dynamics *d, const ParamHeader *p) {
     float values[6] = {f32_at(p, 12), f32_at(p, 16), f32_at(p, 20), f32_at(p, 24), f32_at(p, 28), f32_at(p, 32)};
@@ -1673,16 +1727,55 @@ static void apply_param(Voice *v, const ParamHeader *p) {
 static ABI int32_t ngs2_voice_control(uintptr_t handle, const ParamHeader *params) {
     pthread_mutex_lock(&lock);
     Voice *v = as_voice(handle);
-    if (!v) { pthread_mutex_unlock(&lock); return NGS2_ERR_HANDLE; }
-    const uint8_t *p = (const uint8_t *)params;
-    for (int guard = 0; p && guard < 256; ++guard) {
-        const ParamHeader *h = (const ParamHeader *)p;
-        if (h->size >= sizeof(ParamHeader)) apply_param(v, h);
+    if (!v) { pthread_mutex_unlock(&lock); return NGS2_ERR_VOICE_HANDLE; }
+    uintptr_t cursor = (uintptr_t)params;
+    uintptr_t visited[256];
+    uint32_t count = 0;
+    int32_t result = NGS2_OK;
+    while (cursor) {
+        if ((cursor & (sizeof(uint32_t) - 1)) != 0 || cursor < 0x10000u) {
+            result = NGS2_ERR_VOICE_CONTROL_ADDRESS;
+            break;
+        }
+        for (uint32_t i = 0; i < count; ++i) {
+            if (visited[i] == cursor) {
+                result = NGS2_ERR_VOICE_CONTROL_CIRCULAR;
+                goto done;
+            }
+        }
+        if (count == sizeof(visited) / sizeof(visited[0])) {
+            result = NGS2_ERR_VOICE_CONTROL_CIRCULAR;
+            break;
+        }
+        visited[count++] = cursor;
+        const ParamHeader *h = (const ParamHeader *)cursor;
+        if (h->size < sizeof(ParamHeader)) {
+            result = NGS2_ERR_VOICE_CONTROL_SIZE;
+            break;
+        }
+        if (cursor > UINTPTR_MAX - h->size) {
+            result = NGS2_ERR_VOICE_CONTROL_ADDRESS;
+            break;
+        }
+        apply_param(v, h);
         if (!h->next) break;
-        p += h->next;
+        intptr_t delta = (intptr_t)h->next;
+        uintptr_t distance = (uintptr_t)(delta < 0 ? -delta : delta);
+        if (distance < h->size) {
+            result = NGS2_ERR_VOICE_CONTROL_SIZE;
+            break;
+        }
+        if (delta < 0) {
+            if (cursor < distance) { result = NGS2_ERR_VOICE_CONTROL_ADDRESS; break; }
+            cursor -= distance;
+        } else {
+            if (cursor > UINTPTR_MAX - distance) { result = NGS2_ERR_VOICE_CONTROL_ADDRESS; break; }
+            cursor += distance;
+        }
     }
+done:
     pthread_mutex_unlock(&lock);
-    return NGS2_OK;
+    return result;
 }
 
 static uint32_t voice_flags(const Voice *v) {
@@ -1698,10 +1791,11 @@ static uint32_t voice_flags(const Voice *v) {
     }
 }
 static ABI int32_t ngs2_voice_state(uintptr_t handle, void *out, uint64_t size) {
-    if (!out) return NGS2_ERR_ARG;
+    if (!out) return NGS2_ERR_BUFFER_ADDRESS;
+    if (size != 0x30) return NGS2_ERR_VOICE_STATE_SIZE;
     pthread_mutex_lock(&lock);
     Voice *v = as_voice(handle);
-    if (!v) { pthread_mutex_unlock(&lock); return NGS2_ERR_HANDLE; }
+    if (!v) { pthread_mutex_unlock(&lock); return NGS2_ERR_VOICE_HANDLE; }
     uint8_t state[0x60];
     memset(state, 0, sizeof(state));
     uint32_t flags = voice_flags(v);
@@ -1725,7 +1819,7 @@ static ABI int32_t ngs2_voice_state(uintptr_t handle, void *out, uint64_t size) 
         memcpy(state + 8, &peak, 4);
         memcpy(state + 12, &one, 4);
     }
-    memcpy(out, state, size < sizeof(state) ? size : sizeof(state));
+    memcpy(out, state, 0x30);
     pthread_mutex_unlock(&lock);
     return NGS2_OK;
 }
@@ -1997,8 +2091,7 @@ static void mix_port(const Voice *src, Port *port, float in[MAX_CH][MAX_GRAIN], 
             level *= port->volume;
             float *last = &port->last[o * MAX_CH + i];
             float from = port->primed ? *last : level;
-            *last = level;
-            if (from == 0.0f && level == 0.0f) continue;
+            *last = level;            if (from == 0.0f && level == 0.0f) continue;
             const float *x = in[i];
             if (from == level) for (uint32_t k = 0; k < n; ++k) acc[k] += x[k] * level;
             else {
@@ -2206,7 +2299,7 @@ static void summary(const System *s) {
 static ABI int32_t ngs2_render(uintptr_t handle, const RenderBuffer *buffers, uint32_t count) {
     pthread_mutex_lock(&lock);
     System *s = as_system(handle);
-    if (!s || (count && !buffers)) { pthread_mutex_unlock(&lock); return NGS2_ERR_HANDLE; }
+    if (!s || (count && !buffers)) { pthread_mutex_unlock(&lock); return NGS2_ERR_SYSTEM_HANDLE; }
     uint32_t n = s->grain;
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
