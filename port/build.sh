@@ -85,43 +85,6 @@ echo "Built $PWD/out/tlg-probe"
 # GPU check for run.sh (live_resolution=auto): links only the Vulkan loader.
 "$CC" -std=c11 -O2 -Wall -Wextra -Werror tools/gpu_capabilities.c "${libraries[@]}" -o out/tlg-gpu-capabilities
 if [[ ${1:-} == --test ]]; then
-    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread "${includes[@]}" -I. -Isrc tests/test_pad.c "${libraries[@]}" -lm -o out/pad-test
-    out/pad-test
-    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread "${includes[@]}" -I. -Isrc tests/test_pad_map.c "${libraries[@]}" -lm -o out/pad-map-test
-    out/pad-map-test
-    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror tests/test_mouse_stick.c -lm -o out/mouse-stick-test
-    out/mouse-stick-test
-    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread "${includes[@]}" -I. -Isrc tests/test_runtime.c "${runtime[@]}" out/libatrac9.a -lm "${gpu[@]}" "${libraries[@]}" -o out/runtime-test
-    out/runtime-test
-    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread -Isrc tests/test_file_mods.c -o out/file-mods-test
-    out/file-mods-test
-    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread "${includes[@]}" -I. -Isrc tests/test_sema.c "${runtime[@]}" out/libatrac9.a -lm "${gpu[@]}" "${libraries[@]}" -o out/sema-test
-    out/sema-test
-    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread -Isrc tests/test_rwlock_rp.c -o out/rwlock-rp-test
-    out/rwlock-rp-test
-    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread "${includes[@]}" -I. -Isrc tests/test_freeze.c "${runtime[@]}" out/libatrac9.a -lm "${gpu[@]}" "${libraries[@]}" -o out/freeze-test
-    out/freeze-test
-    "$CC" -std=c11 -D_GNU_SOURCE -O2 -g -Wall -Wextra -Werror -I. -Isrc tests/test_content.c src/runtime_content.c -o out/content-test
-    out/content-test
-    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread "${includes[@]}" -I. -Isrc tests/test_mp3.c src/runtime_mp3.c out/libatrac9.a -lm "${libraries[@]}" -o out/mp3-test
-    out/mp3-test tests/data/sine.mp3
-    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread "${includes[@]}" -I. -Isrc tests/test_videodec.c "${libraries[@]}" -o out/videodec-test
-    out/videodec-test tests/data/tiny.h264
-    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread -I. -Isrc tests/test_services.c -o out/services-test
-    out/services-test
-    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread -I. -Isrc tests/test_ngs2.c src/runtime_ngs2.c out/libatrac9.a -lm -o out/ngs2-test
-    out/ngs2-test
-    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -mbmi -mlzcnt -mmovbe -I. -Isrc tests/test_isa_emulate.c out/isa_emulate.o -o out/isa-emulate-test
-    out/isa-emulate-test
-    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -c src/isa_rewrite.c -I. -Isrc -o out/isa_rewrite.o
-    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -mbmi -mlzcnt -I. -Isrc tests/test_isa_stub.c out/isa_rewrite.o out/isa_emulate.o -o out/isa-stub-test
-    out/isa-stub-test tests/data/isa_fixture.bin
-    # Windows red-zone protection: patched fixture functions survive a Windows-like clobber below rsp.
-    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -I. -Isrc tests/test_red_zone.c out/isa_rewrite.o out/isa_emulate.o -o out/red-zone-test
-    out/red-zone-test tests/data/red_zone_image.bin tests/data/red_zone_table.bin
-    # SSE4A (EXTRQ/INSERTQ): the CPU is the oracle on AMD; elsewhere recorded AMD results.
-    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -msse4a -I. -Isrc tests/test_isa_sse4a.c out/isa_rewrite.o out/isa_emulate.o -o out/isa-sse4a-test
-    out/isa-sse4a-test
-    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -UNDEBUG -I. -Isrc tests/test_cpu_check.c -o out/cpu-check-test
-    out/cpu-check-test
+    echo "The in-repository test suite has been removed." >&2
+    exit 2
 fi
