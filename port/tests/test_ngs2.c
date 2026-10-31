@@ -779,6 +779,7 @@ static ABI int32_t fail_guest_allocator(BufferInfo *info) {
 }
 static void test_ps4_api_validation(void) {
     Graph g = graph_new(1);
+    uintptr_t voice = 0;
     BufferInfo info;
     CHECK(query_buffer(0x1000, NULL, &info) == 0 && info.host_size == 0x1000, "sampler rack size");
     uint64_t sampler_size = info.host_size;
@@ -793,7 +794,6 @@ static void test_ps4_api_validation(void) {
     CHECK(query_buffer(0x7777, NULL, &info) == (int32_t)0x804A0260, "invalid rack id code");
     CHECK(voice_handle(g.sampler, 9999, &voice) == (int32_t)0x804A0302, "invalid voice index code");
 
-    uintptr_t voice = 0;
     CHECK(voice_handle(g.sampler, 1, &voice) == 0, "voice for validation tests");
     uint8_t malformed[24] __attribute__((aligned(8))) = {0};
     uint16_t bad_size = 4;
