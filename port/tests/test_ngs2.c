@@ -791,8 +791,9 @@ static void test_ps4_api_validation(void) {
     CHECK(query_buffer(0x2001, NULL, &info) == 0 && info.host_size == 0x3e180, "full-rate reverb size");
     uint8_t rev_option[0x88] = {0};
     uint64_t rev_option_size = 0x88;
-    uint32_t supported_reverb_size = 1;
+    uint32_t reverb_channels = 8, supported_reverb_size = 1;
     memcpy(rev_option, &rev_option_size, sizeof(rev_option_size));
+    memcpy(rev_option + 0x30, &reverb_channels, sizeof(reverb_channels));
     memcpy(rev_option + 0x34, &supported_reverb_size, sizeof(supported_reverb_size));
     CHECK(query_buffer(0x2001, rev_option, &info) == 0 && info.host_size == 0x3e180, "supported reverb size");
     uint32_t unsupported_reverb_size = 0;
