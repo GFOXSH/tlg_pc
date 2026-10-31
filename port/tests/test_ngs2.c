@@ -783,6 +783,16 @@ static ABI int32_t test_guest_free(BufferInfo *info) {
     (void)info;
     return 0;
 }
+static uint8_t test_guest_buffer[0x1000];
+static ABI int32_t test_guest_alloc(BufferInfo *info) {
+    if (info->host_size > sizeof(test_guest_buffer)) return (int32_t)0x804A0209;
+    info->host_buffer = test_guest_buffer;
+    return 0;
+}
+static ABI int32_t fail_guest_free(BufferInfo *info) {
+    (void)info;
+    return (int32_t)-54321;
+}
 static void test_ps4_api_validation(void) {
     Graph g = graph_new(1);
     uintptr_t voice = 0;
@@ -836,6 +846,10 @@ static void test_ps4_api_validation(void) {
     memcpy(rack_option, &rack_option_size, sizeof(rack_option_size));
     CHECK(rack_create_alloc(g.system, 0x2000, rack_option, &allocator, &failed_rack) == -12345,
           "rack guest allocator error is propagated");
+    struct { TestAllocHandler alloc, free; uintptr_t user_data; } free_error_allocator = {test_guest_alloc, fail_guest_free, 0};
+    uintptr_t allocated_system = 0;
+    CHECK(system_create(NULL, &free_error_allocator, &allocated_system) == 0, "guest allocator successful allocation");
+    CHECK(system_destroy(allocated_system, NULL) == -54321, "guest allocator free error is propagated");
     uint8_t bad_system_option[0x40] = {0};
     uint64_t system_option_size = 0x40;
     memcpy(bad_system_option, &system_option_size, sizeof(system_option_size));
