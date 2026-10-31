@@ -497,8 +497,7 @@ static void biquad_design(Biquad *f, uint32_t rate) {
     float w = x < 0.001f ? 0.0062831853f : fminf(x, 0.49987f) * 6.2831855f;
     float q = f->q < 0.0001f ? 0.0001f : fminf(f->q, 32.0f);
     float s = sinf(w), cs = cosf(w);
-    float b0, b1, b2, a0, a1, a2;    switch (f->type) {    case 6: case 7: {   /* low / high shelf, level = linear gain */        float A = sqrtf(fmaxf(f->level, 0.0001f)), beta = sqrtf(A) / q * s;
-        if (f->type == 6) {
+    float b0, b1, b2, a0, a1, a2;    switch (f->type) {    case 6: case 7: {   /* low / high shelf, level = linear gain */        float A = sqrtf(fmaxf(f->level, 0.0001f)), beta = sqrtf(A) / q * s;        if (f->type == 6) {
             b0 = A * ((A + 1) - (A - 1) * cs + beta); b1 = 2 * A * ((A - 1) - (A + 1) * cs); b2 = A * ((A + 1) - (A - 1) * cs - beta);
             a0 = (A + 1) + (A - 1) * cs + beta; a1 = -2 * ((A - 1) + (A + 1) * cs); a2 = (A + 1) + (A - 1) * cs - beta;
         } else {
@@ -997,8 +996,7 @@ static void reverb_run(Reverb *r, uint32_t rate, float data[MAX_CH][MAX_GRAIN], 
     r->primed = 1;}
 /* ---- Chorus and delay (custom rack modules) ---- */
 static void chorus_run(Chorus *ch, uint32_t rate, float data[MAX_CH][MAX_GRAIN], uint32_t channels, uint32_t n) {    if (!ch->line) return;
-    uint32_t phases = ch->phases < 1 ? 1 : ch->phases > 4 ? 4 : ch->phases;
-    float base = (float)(int)(ch->delay_ms * 0.001f * (float)rate);
+    uint32_t phases = ch->phases < 1 ? 1 : ch->phases > 4 ? 4 : ch->phases;    float base = (float)(int)(ch->delay_ms * 0.001f * (float)rate);
     float depth = base * ch->depth, step = ch->rate_hz / (float)rate;
     float dry = ch->gain * ch->dry, wet = ch->gain * ch->wet;
     float phase0 = ch->phase;
@@ -1291,26 +1289,41 @@ static ABI int32_t ngs2_system_destroy(uintptr_t handle, BufferInfo *out) {
 }
 
 /* ---- Exports: racks ---- */
+static uint64_t rack_option_size(uint32_t rack_id) {
+    /* PS4 SDK option layouts (including their type-specific tail):
+     * sampler 0xa8, submixer 0x98, mastering/reverb 0x88, custom submixer 0x4d8. */
+    switch (rack_id) {
+    case RACK_SAMPLER: return 0xa8;
+    case RACK_SUBMIXER: return 0x98;
+    case RACK_MASTERING: case RACK_REVERB: return 0x88;
+    default: return (rack_id & 0xf000u) == 0x4000u ? 0x4d8 : 0;
+    }
+}
 static ABI int32_t ngs2_query_buffer(uint32_t rack_id, const void *option, BufferInfo *out) {
-    if (!out) return NGS2_ERR_BUFFER_INFO;
+    if (!out) return NGS2_ERR_BUFFER_ADDRESS;
     memset(out, 0, sizeof(*out));
-    /* RackQueryBufferSize returns rack-specific work sizes, not one generic context size.
-     * The TLG reverb trace uses reverbSize=0 (full-rate) and reports 0x3e180 bytes. */
+    const uint64_t expected_option_size = rack_option_size(rack_id);
+    if (!expected_option_size) return NGS2_ERR_RACK_ID;
+    if (option) {
+        uint64_t supplied_option_size = 0;
+        memcpy(&supplied_option_size, option, sizeof(supplied_option_size));
+        if (supplied_option_size != expected_option_size) return (int32_t)0x804A0081; /* INVALID_OPTION_SIZE */
+    }
+    /* Rack work areas differ by rack family. Reverb's PS4 option tail is:
+     * maxChannels at +0x30 and reverbSize at +0x34. The supported SDK size is 1. */
     switch (rack_id) {
     case RACK_SAMPLER:   out->host_size = 0x1000; break;
     case RACK_SUBMIXER:  out->host_size = 0x2000; break;
     case RACK_MASTERING: out->host_size = 0x1800; break;
     case RACK_REVERB: {
-        uint32_t reverb_size = 0;
-        if (option) memcpy(&reverb_size, (const uint8_t *)option + 0x10, sizeof(reverb_size));
-        /* Only the full-rate work layout is currently implemented by this HLE. */
-        if (reverb_size != 0) return NGS2_ERR_REVERB_SIZE;
+        uint32_t reverb_size = 1;
+        if (option) memcpy(&reverb_size, (const uint8_t *)option + 0x34, sizeof(reverb_size));
+        if (reverb_size != 1) return NGS2_ERR_REVERB_SIZE;
         out->host_size = 0x3e180;
         break;
     }
     default:
-        if ((rack_id & 0xf000u) == 0x4000u) out->host_size = 0x8000;
-        else return NGS2_ERR_RACK_ID;
+        out->host_size = 0x8000;
         break;
     }
     return NGS2_OK;
@@ -1497,8 +1510,7 @@ static void sampler_setup(Voice *v, const ParamHeader *p) {
     s->pitch = 1.0f;
     s->env_forward = s->env_release = 0;    s->env_level = 1.0f;
     s->releasing = 0;
-    s->decoded_samples = s->decoded_bytes = s->user = 0;
-    s->waveform_pointer = NULL;
+    s->decoded_samples = s->decoded_bytes = s->user = 0;    s->waveform_pointer = NULL;
     v->paused = 0;
     if (!s->fifo) s->fifo = calloc((size_t)FIFO_FRAMES * MAX_CH, sizeof(float));
     sampler_clear_blocks(s);    sampler_reset_decoder(s);
@@ -1997,8 +2009,7 @@ static void fifo_fill(Voice *v, uint32_t need) {
             s->source_done = 1;            break;
         }
         if (!decode_unit(v)) s->source_done = 1;
-    }
-}
+    }}
 /* Envelope: each point moves from the level at its start to `height` over `duration` samples
  * along its curve. After the forward points the level holds (a voice whose forward envelope
  * ends at 0 stops); after the release points the voice ends. */
