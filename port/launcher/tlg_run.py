@@ -6,7 +6,7 @@ Shared by the command line (run_tlg.sh -> `tlg_run.py [seconds]`) and the launch
 (tlg_launcher.py), so both start the game the same way:
   1. prepare.py / link_modules.py / content_profile.py build out/boot-linked.bin from the game
      folder (eboot 1.03 + the game's libc/Fios2, and libSceNgs2.sprx from the console firmware
-     when present: native audio; otherwise the built-in mixer, runtime_ngs2.c); on a CPU without
+     when present: native audio; otherwise the HLE implementation in src/ngs2/); on a CPU without
      the PS4's MOVBE/BMI1/LZCNT/SSE4A, and on Windows for the red-zone protection, isa_rewrite.py
      writes out/isa-rewrite.bin, the instruction sites tlg-probe rewrites;
   2. the TLG defaults below become TLG_* environment variables (each one validated in play);
@@ -449,7 +449,7 @@ def build_env(settings, extra=None):
         game_languages(settings.get('game_dir')).get(settings['game_language'], 1)))
     if settings.get('ui_language', 'auto') != 'auto':
         env['TLG_UI_LANG'] = settings['ui_language']
-    # Without the console module the port's own mixer (runtime_ngs2.c) plays the audio.
+    # Without the console module the HLE NGS2 implementation in src/ngs2/ plays the audio.
     env['TLG_NGS2'] = 'native' if ngs2_module(settings) else 'hle'
     env['TLG_CONFIG'] = str(USER_DIR / 'tlg.ini')
     # Window name and app id (matches tlg-pc.desktop for Alt+Tab and the dock) and icon.

@@ -48,7 +48,7 @@ Tudo em 12 e 13 de outubro de 2026, do dump do console até o jogo jogável e pu
 flowchart LR
     L["Launcher (tlg_launcher.py / tlg_run.py)<br/>prepare.py · link_modules.py · content_profile.py"] --> P
     subgraph P["Processo tlg-probe (Linux x86-64)"]
-        E["eboot.bin 1.03 + libc.prx + libSceFios2.prx<br/>+ libSceNgs2.sprx (código PS4 nativo na CPU)"]
+        E["eboot.bin 1.03 + libc.prx + libSceFios2.prx<br/>+ libSceNgs2.sprx opcional (áudio nativo; HLE NGS2 integrado)"]
         R["Runtime HLE (src/runtime_*.c)<br/>kernel, arquivos, threads, pad, áudio, saves"]
         G["Tradutor de GPU (shadPS4 video_core)<br/>Gnm/PM4 + shaders GCN → Vulkan/SPIR-V"]
         E -- "imports por NID" --> R

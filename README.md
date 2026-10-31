@@ -91,7 +91,7 @@ A lista completa, que também vai nas notas de cada Release, está em [`docs/ARQ
 
 ## Como jogar
 
-1. Extraia o pacote e coloque o `libSceNgs2.sprx` na pasta `system_lib/`.
+1. (Opcional, para áudio nativo) Extraia o pacote e coloque o `libSceNgs2.sprx` na pasta `system_lib/`.
 2. Abra o **The Last Guardian**, escolha a pasta do jogo e o idioma (o CUSA03627 tem inglês, português, espanhol e francês; o CUSA03745 tem 15) e, se quiser, a taxa de quadros e os filtros de imagem. Clique em **Jogar**.
 3. No jogo, **F10** liga o contador de FPS, e **Insert** (ou R3 + L2 no controle) abre o menu do port.
 4. Controle (PS4/PS5, Xbox) ou teclado e mouse: o mouse gira a câmera, **Esc** solta o mouse e um clique prende de novo. O layout e o remapeamento estão no [`README-player.md`](port/packaging/README-player.md) e na caixa **Controles** do launcher.
@@ -211,7 +211,7 @@ The full list, which also goes in the notes of every Release, is in [`docs/ARQUI
 
 ## How to play
 
-1. Extract the package and put `libSceNgs2.sprx` in the `system_lib/` folder.
+1. (Optional, for native audio) Extract the package and put `libSceNgs2.sprx` in the `system_lib/` folder.
 2. Open **The Last Guardian**, pick the game folder and the language (CUSA03627 has English, Portuguese, Spanish and French; CUSA03745 has 15) and, if you like, the frame rate and image filters. Click **Play**.
 3. In game, **F10** toggles the FPS counter, and **Insert** (or R3 + L2 on a controller) opens the port's menu.
 4. Controller (PS4/PS5, Xbox) or keyboard and mouse: the mouse turns the camera, **Esc** releases the mouse and a click takes it back. The layout and remapping are in [`README-player.md`](port/packaging/README-player.md) and in the launcher's **Controls** box.
