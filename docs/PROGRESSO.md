@@ -10,7 +10,7 @@ The Last Guardian (PS4, CUSA03627, update 1.03) roda no PC com imagem, som, cont
 | --- | --- |
 | Boot, menu, intro, gameplay | Funciona; sessões de 10+ minutos sem falhas |
 | Imagem | Nativa, sem tremor (FSR3/jitter do port de GoW3 desligados) |
-| Áudio | Funciona: NGS2 original do firmware do console |
+| Áudio | NGS2 nativo do firmware confirmado; HLE C++ de `knack_pc` integrado, equivalência com o TLG ainda não validada |
 | Controle | DualSense e 8BitDo via SDL3, com hot-plug |
 | Saves | Autosave e Continue funcionam |
 | Desempenho | 30 FPS (trava original do jogo); engasgos pontuais de 20 a 70 ms, pouco perceptíveis |
@@ -33,6 +33,7 @@ Tudo em 12 e 13 de outubro de 2026, do dump do console até o jogo jogável e pu
 | Contador de FPS nativo | F10 liga e desliga; GPU, CPU, RAM e VRAM medidos no Linux |
 | Renomeação para TLG | 2.581 ocorrências em 247 arquivos; variáveis `TLG_*`, binário `tlg-probe` |
 | Áudio nativo | `libSceNgs2.sprx` do firmware do console linkado como módulo; som na intro e no gameplay |
+| Áudio HLE | `port/src/ngs2/` (implementação de `knack_pc`, adaptada para ABI PS4); compilação/ligação integradas, teste de áudio no TLG pendente |
 | Saves e lança do Trico | Leitura curta de textura corrigida; Continue volta ao ponto certo |
 | Imagem nativa | FSR3, jitter e motion vectors do GoW3 desligados: o tremor sumiu |
 | Readback GPU para CPU | Modo Precise sem deadlocks; entrada no gameplay sem crash |

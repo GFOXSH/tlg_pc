@@ -42,7 +42,7 @@ Por **HayatoG** · YouTube [@hayatog-dev](https://www.youtube.com/@hayatog-dev) 
 |---|---|
 | Boot, menu, intro e gameplay | ✅ Funciona; sessões de 10+ minutos sem falhas |
 | Imagem | ✅ Nativa, 1080p, sem tremores; SMAA, RCAS/CAS e ajustes de cor opcionais |
-| Áudio | ✅ Com o `libSceNgs2.sprx` do firmware do seu console |
+| Áudio | ✅ Nativo com `libSceNgs2.sprx`; HLE NGS2 integrado, compatibilidade TLG ainda por validar |
 | Controle | ✅ DualSense, DualShock 4, Xbox e 8BitDo via SDL3, com hot-plug; sensor de movimento real ou simulado |
 | Mouse e teclado | ✅ Câmera no mouse e remapeamento no launcher |
 | Saves | ✅ Autosave e Continuar |
@@ -78,7 +78,7 @@ Tudo vem do **seu** PS4 (GoldHEN + Itemzflow). Nada disso vai no download. Use *
 
 O **CUSA03745 (UE)** traz 15 idiomas, no lugar dos quatro do CUSA03627: inglês, francês, espanhol (Espanha), alemão, italiano, holandês, português (Portugal), russo, finlandês, sueco, dinamarquês, norueguês, polonês, turco e árabe. O launcher lista os idiomas do CUSA que estiver carregado.
 
-**Do firmware do console (opcional, para ter som):** `libSceNgs2.sprx` (372 KB), de `/system/common/lib/` do seu PS4. Ele vai na pasta `system_lib/` ao lado do executável.
+**Do firmware do console (opcional, para áudio nativo):** `libSceNgs2.sprx` (372 KB), de `/system/common/lib/` do seu PS4. Ele vai na pasta `system_lib/` ao lado do executável. Sem o arquivo, o runtime usa a implementação HLE; a compatibilidade sonora dela com o TLG ainda está em validação.
 
 **Como montar a pasta:**
 1. No Itemzflow, faça o dump do jogo (`CUSA03627` ou `CUSA03745`) e do update (`CUSA03627-patch` ou `CUSA03745-patch`) para um pendrive exFAT.
@@ -118,7 +118,7 @@ No Windows, o build roda no MSYS2 CLANG64 ([`port/packaging/windows/README.md`](
 
 | Camada | O que faz | Base |
 |---|---|---|
-| Loader | Carrega o `eboot.bin` 1.03 e liga os módulos do jogo (`libc.prx`, `libSceFios2.prx`) e o `libSceNgs2.sprx` do console | [bloodborne_pc](https://github.com/deadinside28/bloodborne_pc), [gow3_pc](https://github.com/FelipePrado0/gow3_pc) |
+| Loader | Carrega o `eboot.bin` 1.03 e liga os módulos do jogo (`libc.prx`, `libSceFios2.prx`) e, opcionalmente, o `libSceNgs2.sprx` do console para áudio nativo | [bloodborne_pc](https://github.com/deadinside28/bloodborne_pc), [gow3_pc](https://github.com/FelipePrado0/gow3_pc) |
 | Runtime | Reimplementa as bibliotecas do PS4: kernel, threads, arquivos, controle, áudio, saves | gow3_pc + 54 funções novas para o TLG |
 | Vídeo | Traduz os comandos Gnm e os shaders GCN para Vulkan/SPIR-V | núcleo de vídeo do [shadPS4](https://github.com/shadps4-emu/shadPS4) |
 
@@ -166,7 +166,7 @@ The screenshots and the performance chart are at the top of this page.
 |---|---|
 | Boot, menu, intro and gameplay | ✅ Works; 10+ minute sessions without failures |
 | Graphics | ✅ Native 1080p, no shimmering; optional SMAA, RCAS/CAS and colour adjustments |
-| Audio | ✅ With `libSceNgs2.sprx` from your console's firmware |
+| Audio | ✅ Native with `libSceNgs2.sprx`; HLE NGS2 integrated, TLG compatibility still to be validated |
 | Controller | ✅ DualSense, DualShock 4, Xbox and 8BitDo via SDL3, with hot-plug; real or simulated motion sensor |
 | Mouse and keyboard | ✅ Mouse camera and remapping in the launcher |
 | Saves | ✅ Autosave and Continue |
@@ -198,7 +198,7 @@ Everything comes from **your own** PS4 (GoldHEN + Itemzflow). None of it is in t
 
 **CUSA03745 (EU)** ships 15 languages instead of CUSA03627's four: English, French, Spanish (Spain), German, Italian, Dutch, Portuguese (Portugal), Russian, Finnish, Swedish, Danish, Norwegian, Polish, Turkish and Arabic. The launcher lists the languages of the loaded CUSA.
 
-**From the console firmware (optional, for audio):** `libSceNgs2.sprx` (372 KB), from `/system/common/lib/` on your PS4. It goes in the `system_lib/` folder next to the executable.
+**From the console firmware (optional, for native audio):** `libSceNgs2.sprx` (372 KB), from `/system/common/lib/` on your PS4. It goes in the `system_lib/` folder next to the executable. Without the file, the runtime uses the HLE implementation; TLG audio compatibility is still being validated.
 
 **How to build the folder:**
 1. In Itemzflow, dump the game (`CUSA03627` or `CUSA03745`) and the update (`CUSA03627-patch` or `CUSA03745-patch`) to an exFAT USB drive.
@@ -238,7 +238,7 @@ On Windows, the build runs in MSYS2 CLANG64 ([`port/packaging/windows/README.md`
 
 | Layer | What it does | Based on |
 |---|---|---|
-| Loader | Loads `eboot.bin` 1.03 and links the game's modules (`libc.prx`, `libSceFios2.prx`) and the console's `libSceNgs2.sprx` | [bloodborne_pc](https://github.com/deadinside28/bloodborne_pc), [gow3_pc](https://github.com/FelipePrado0/gow3_pc) |
+| Loader | Loads `eboot.bin` 1.03 and links the game's modules (`libc.prx`, `libSceFios2.prx`) and, optionally, the console's `libSceNgs2.sprx` for native audio | [bloodborne_pc](https://github.com/deadinside28/bloodborne_pc), [gow3_pc](https://github.com/FelipePrado0/gow3_pc) |
 | Runtime | Reimplements the PS4 libraries: kernel, threads, files, controller, audio, saves | gow3_pc + 54 new functions for TLG |
 | Video | Translates Gnm commands and GCN shaders to Vulkan/SPIR-V | [shadPS4](https://github.com/shadps4-emu/shadPS4) video core |
 

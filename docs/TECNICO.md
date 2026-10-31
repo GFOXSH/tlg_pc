@@ -325,10 +325,9 @@ Uso: `TLG_<OPÇÃO>=valor ./run_tlg.sh`. Os padrões abaixo já estão em `port/
 | `TLG_PAD_FILE` | — | entrada roteirizada do controle (testes automáticos) |
 | `TLG_TOGGLE_FILE` | — | máscara de otimizações desligadas, lida em tempo real |
 | `TLG_GAME_DIR` | `game/CUSA03627` | pasta do jogo (visão unificada base + 1.03) |
-| `TLG_NGS2` | `native` com o `.sprx`, senão `hle` | áudio: `native` = `libSceNgs2.sprx` do console; `hle` = mixer próprio (`runtime_ngs2.c`, experimental, ver [NGS2_LEVANTAMENTO.md](NGS2_LEVANTAMENTO.md)) |
-| `TLG_NGS2_LOG` | `0` | mixer próprio: parâmetros não tratados, erros de decodificação e um resumo a cada 30 s |
-| `TLG_NGS2_WAV` | — | mixer próprio: grava a mixagem final (float, 8 canais) para comparar com o nativo (`TLG_NGS2_TRACE_WAV`) via `port/tools/ngs2_compare.py` |
-| `TLG_NGS2_USERFX` / `TLG_NGS2_REVERB` / `TLG_NGS2_CUSTOM` / `TLG_NGS2_DELAY_TYPE` | `1` / — / — / `1` | mixer próprio, para depuração: `USERFX=0` não chama os efeitos do jogo (USER_FX); `REVERB=pass` deixa o rack de reverb passar a entrada sem processar; `CUSTOM=mute` cala os racks custom (chorus/delay); `DELAY_TYPE=0` faz o delay usar um downmix mono em vez de um por canal |
+| `TLG_NGS2` | `native` com o `.sprx`, senão `hle` | áudio: `native` = `libSceNgs2.sprx` do console; `hle` = implementação C++ de `port/src/ngs2/`, transplantada de `knack_pc` e adaptada para os layouts PS4; ainda requer validação de equivalência no TLG |
+| `TLG_NGS2_SKIP_UNKNOWN` | `0` | com `1`, ignora e registra IDs de parâmetros `VoiceControl` ainda não implementados (modo diagnóstico) |
+| `TLG_NGS2_LOG_SKIPPED` | — | junto com `SKIP_UNKNOWN=1`, imprime exemplos dos primeiros parâmetros ignorados |
 
 Todas as opções do código usam o prefixo `TLG_` (o código herdado do gow3_pc foi renomeado).
 

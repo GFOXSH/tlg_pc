@@ -121,7 +121,7 @@ Cabeçalho: `u16 size; s16 next; u32 id`. `next` é o deslocamento em bytes até
 
 ## 4. Plano de implementação
 
-Arquivo novo `port/src/runtime_ngs2.c`, compartilhado pelos dois ports, ligado por `TLG_NGS2=hle`. O nativo continua sendo o padrão até a comparação ficar boa.
+Este era o plano original para o mixer C. Em 01/11/2026, a implementação HLE foi substituída pela versão C++ de `port/src/ngs2/`, transplantada de `AbdelmoumenDeghbouche/knack_pc` (`src/ngs2/`): ela inclui uma camada explícita de tradução dos layouts PS4 para a implementação NGS2 baseada em AnyPS5. O modo nativo continua disponível quando `TLG_NGS2=native`.
 
 | Etapa | Conteúdo | Validação |
 |---|---|---|
@@ -134,9 +134,11 @@ Arquivo novo `port/src/runtime_ngs2.c`, compartilhado pelos dois ports, ligado p
 
 Estimativa: etapas 1–3 em 2–3 semanas; 4–5 em mais 2–4.
 
-## 5. Implementação (etapas 1–3, 14/10/2026)
+## 5. Implementação anterior (mixer C, removido em 01/11/2026)
 
-`port/src/runtime_ngs2.c` (branch `feat/ngs2-hle`), sem nada de jogo dentro. Escolha: `TLG_NGS2=native` usa o `.sprx`; qualquer outro valor (o launcher manda `hle` quando o `.sprx` falta ou está desmarcado) usa o mixer próprio. Teste offline: `tests/test_ngs2.c` (`build.sh --test`).
+O mixer descrito nesta seção era `port/src/runtime_ngs2.c`; ele foi removido ao substituir a implementação HLE pela versão C++ em `port/src/ngs2/`. A versão atual vem de `AbdelmoumenDeghbouche/knack_pc` (HEAD de `main` em 26/10/2026) e mantém a adaptação de ABI PS4 em `Ngs2Exports.cpp`. `TLG_NGS2=native` continua deixando a resolução para o `.sprx`; em `hle`, o runtime resolve os exports da implementação C++.
+
+O antigo `tests/test_ngs2.c` testava exclusivamente o mixer C removido e, por isso, também foi removido. A suíte de runtime agora compila e liga o novo módulo; ainda não há neste repositório um teste comportamental NGS2 específico nem uma comparação de equivalência do áudio do TLG com o `.sprx`.
 
 Achados novos [C]:
 - **Fim de voz no sndx** (TLG `0x1a85b0`, a função que imprime `VOICE_FINISHED`): depois de `VoiceGetState(h, &st, 0x30)`, a voz é dada como terminada **só quando o bit 0 (INUSE) de `stateFlags` cai**. `(flags & 0x22) == 2` (PLAYING sem EMPTY) marca "tocou"; PLAYING com **EMPTY (0x20)** conta falta de dados (stream atrasado). `numDecodedSamples`/`decodedDataSize` (st+0x10) e `envelopeHeight`/`peakHeight` são copiados para a voz do sndx.
@@ -147,9 +149,9 @@ Achados novos [C]:
 
 Estado (etapas 1–3): sampler (PCM, VAG/HEVAG com a tabela de 128 preditores, ATRAC9), blocos (fila, repetições, skip), pitch (Catmull-Rom), envelope, eventos, portas/matrizes/PATCH (rack = voz 0), submixer/reverb/custom/mastering em ordem de dependência, várias saídas (`OUTPUT`), USER_FX (chama a função do jogo, sem a trava do mixer).
 
-### 5.1 Efeitos (etapas 4–5, estudados no `libSceNgs2.sprx`) [C]
+### 5.1 Análise histórica dos efeitos (referência do `libSceNgs2.sprx`) [C]
 
-O módulo nativo monta cada voz como uma cadeia de "módulos" com parâmetros convertidos e clampados. O que foi lido no binário e reescrito em `runtime_ngs2.c`:
+Os itens abaixo registram o comportamento observado no módulo nativo e as decisões do mixer C anterior. Eles são notas de engenharia reversa, não uma declaração de que cada detalhe já foi validado na implementação C++ atual.
 
 - **Ordem na voz** (sampler e submixer): filtros com `location` 0 → envelope → compressor (submixer) → distorção → USER_FX → filtros `location` 1 → peak meter → para cada porta p: filtros `location` 2+p só no que a porta envia → envio (volume × matriz, **rampa linear no grain** entre o valor anterior e o novo). Início com fade-in de 64 amostras; STOP/KILL com fade-out de 64 amostras no grain seguinte.
 - **Filtro** (`0x1000000a`/`0x20000006`, 48 B): `index, location (0..17), type, channelMask` (bits = canais **sem** filtro), `fc, q, level` ou 5 coeficientes diretos (`type 0x20`). Tipos: 0 bypass, 1 LPF, 2 HPF, 3 BPF, 4 BPF 0 dB, 5 notch, 6 low shelf, 7 high shelf, 8 peaking (`level` = ganho linear, A = √level), 9/10 LPF/HPF de 1ª ordem. Projetos RBJ; `fc/fs` limitado a 0,001..0,49987, Q a 1e-4..32.
@@ -159,7 +161,7 @@ O módulo nativo monta cada voz como uma cadeia de "módulos" com parâmetros co
 - **Custom:** chorus (`0x40001c00`: 1–4 fases em cascata, atraso, LFO senoidal, profundidade, realimentação, dry/wet) e delay multi-tap (`0x40001d00`: dry, wet, ganho, realimentação normalizada pela soma dos taps, passa-baixa de 1 polo, até 8 taps, por canal por padrão). Nos exemplos do TLG o chorus tem wet 0 (só passa o sinal).
 - **Envelope:** curvas 0 linear, 1 `(10^x−1)/9`, 2 `log10(1+9x)`, 3 S (cosseno), 4 arco-seno, 5 seno/cosseno de um quarto; um envelope que termina a parte "forward" em 0 encerra a voz.
 
-Validação: `tests/test_ngs2.c` mede resposta dos filtros, curva do compressor, limiter, LFE, ganho, T60 do reverb (1,0 e 2,5 s), tempo do delay e do chorus e as curvas do envelope; custo de um grafo do tamanho do TLG ≈ 1,6 ms por render de 256 amostras (5,3 ms de áudio). `TLG_NGS2_WAV=<arquivo>` grava a mixagem; `tools/ngs2_compare.py a.wav b.wav --align` alinha as duas gravações (a tela de título toca os mesmos streams) e dá diferença de nível e correlação por canal. Com o mixer das etapas 1–3, a tela de título já batia com o nativo: correlação 0,999, −0,4 dB.
+A validação citada aqui pertencia ao mixer C removido e não se aplica ao código C++ atual. A gravação `TLG_NGS2_WAV` também foi removida junto com aquele mixer; `TLG_NGS2_TRACE_WAV` continua disponível para capturar a referência do módulo nativo. A equivalência sonora da nova implementação ainda precisa ser medida no TLG.
 
 ## 6. Como repetir o rastreio
 
@@ -167,4 +169,4 @@ Validação: `tests/test_ngs2.c` mede resposta dos filtros, curva do compressor,
 TLG_NGS2=native TLG_NGS2_TRACE=~/decomp/ngs2_ref/x_trace.txt TLG_NGS2_TRACE_WAV=~/decomp/ngs2_ref/x_ref.wav <rodar o jogo>
 ```
 
-O código está em `port/src/runtime_ngs2_trace.c`, nas branches `feat/ngs2-hle` dos dois repositórios. Ele embrulha os imports do eboot que foram ligados ao `.sprx` e conta os parâmetros por (rack, id), guardando até 4 exemplos com os dados apontados. Também registra as ligações PATCH e grava a mixagem final.
+O código está em `port/src/runtime_ngs2_trace.c` no repositório `tlg_pc`. Ele embrulha os imports do eboot que foram ligados ao `.sprx` e conta os parâmetros por (rack, id), guardando até 4 exemplos com os dados apontados. Também registra as ligações PATCH e grava a mixagem final.
