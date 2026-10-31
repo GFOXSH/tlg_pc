@@ -830,6 +830,15 @@ static void test_ps4_api_validation(void) {
     uint32_t invalid_rate = 12345;
     memcpy(bad_system_option + 0x24, &invalid_rate, sizeof(invalid_rate));
     CHECK(system_create(bad_system_option, NULL, &failed_system) == (int32_t)0x804A0201, "invalid system sample rate code");
+    uint32_t valid_rate = 48000, invalid_grain = 65;
+    memcpy(bad_system_option + 0x24, &valid_rate, sizeof(valid_rate));
+    memcpy(bad_system_option + 0x1c, &invalid_grain, sizeof(invalid_grain));
+    CHECK(system_create(bad_system_option, NULL, &failed_system) == (int32_t)0x804A0050, "invalid max grain samples code");
+    invalid_grain = 256;
+    memcpy(bad_system_option + 0x1c, &invalid_grain, sizeof(invalid_grain));
+    invalid_grain = 65;
+    memcpy(bad_system_option + 0x20, &invalid_grain, sizeof(invalid_grain));
+    CHECK(system_create(bad_system_option, NULL, &failed_system) == (int32_t)0x804A0051, "invalid num grain samples code");
     system_destroy(g.system, NULL);
 }
 
