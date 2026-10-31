@@ -50,7 +50,7 @@
 
 /* PS4 libSceNgs2 error domains. 0x804A0201 is SAMPLE_RATE, not ARG. */
 #define NGS2_OK 0
-#define NGS2_ERR_SYSTEM_MEMORY ((int32_t)0x804A0001) /* SCE_NGS2_ERROR_FAIL */
+#define NGS2_ERR_SYSTEM_FAIL ((int32_t)0x804A0001) /* SCE_NGS2_ERROR_FAIL */
 #define NGS2_ERR_SYSTEM_HANDLE ((int32_t)0x804A0230)
 #define NGS2_ERR_RACK_ID ((int32_t)0x804A0260)
 #define NGS2_ERR_RACK_HANDLE ((int32_t)0x804A0261)
@@ -497,8 +497,7 @@ static float mb_to_gain(float mb) { return mb < -10000.0f ? 0.0f : powf(10.0f, m
 static void biquad_design(Biquad *f, uint32_t rate) {
     float *c = f->c;
     f->dirty = 0;
-    if (f->type == 0x20) { memcpy(c, f->direct, sizeof(f->direct)); return; }    if (f->type < 1 || f->type > 10) { c[0] = 1.0f; c[1] = c[2] = c[3] = c[4] = 0.0f; return; }    float x = f->fc / (float)rate;    float w = x < 0.001f ? 0.0062831853f : fminf(x, 0.49987f) * 6.2831855f;    float q = f->q < 0.0001f ? 0.0001f : fminf(f->q, 32.0f);    float s = sinf(w), cs = cosf(w);    float b0, b1, b2, a0, a1, a2;    switch (f->type) {    case 6: case 7: {   /* low / high shelf, level = linear gain */        float A = sqrtf(fmaxf(f->level, 0.0001f)), beta = sqrtf(A) / q * s;        if (f->type == 6) {            b0 = A * ((A + 1) - (A - 1) * cs + beta); b1 = 2 * A * ((A - 1) - (A + 1) * cs); b2 = A * ((A + 1) - (A - 1) * cs - beta);            a0 = (A + 1) + (A - 1) * cs + beta; a1 = -2 * ((A - 1) + (A + 1) * cs); a2 = (A + 1) + (A - 1) * cs - beta;        } else {            b0 = A * ((A + 1) + (A - 1) * cs + beta); b1 = -2 * A * ((A - 1) + (A + 1) * cs); b2 = A * ((A + 1) + (A - 1) * cs - beta);            a0 = (A + 1) - (A - 1) * cs + beta; a1 = 2 * ((A - 1) - (A + 1) * cs); a2 = (A + 1) - (A - 1) * cs - beta;
-        }
+    if (f->type == 0x20) { memcpy(c, f->direct, sizeof(f->direct)); return; }    if (f->type < 1 || f->type > 10) { c[0] = 1.0f; c[1] = c[2] = c[3] = c[4] = 0.0f; return; }    float x = f->fc / (float)rate;    float w = x < 0.001f ? 0.0062831853f : fminf(x, 0.49987f) * 6.2831855f;    float q = f->q < 0.0001f ? 0.0001f : fminf(f->q, 32.0f);    float s = sinf(w), cs = cosf(w);    float b0, b1, b2, a0, a1, a2;    switch (f->type) {    case 6: case 7: {   /* low / high shelf, level = linear gain */        float A = sqrtf(fmaxf(f->level, 0.0001f)), beta = sqrtf(A) / q * s;        if (f->type == 6) {            b0 = A * ((A + 1) - (A - 1) * cs + beta); b1 = 2 * A * ((A - 1) - (A + 1) * cs); b2 = A * ((A + 1) - (A - 1) * cs - beta);            a0 = (A + 1) + (A - 1) * cs + beta; a1 = -2 * ((A - 1) + (A + 1) * cs); a2 = (A + 1) + (A - 1) * cs - beta;        } else {            b0 = A * ((A + 1) + (A - 1) * cs + beta); b1 = -2 * A * ((A - 1) + (A + 1) * cs); b2 = A * ((A + 1) + (A - 1) * cs - beta);            a0 = (A + 1) - (A - 1) * cs + beta; a1 = 2 * ((A - 1) - (A + 1) * cs); a2 = (A + 1) - (A - 1) * cs - beta;        }
         break;
     }
     case 8: {           /* peaking EQ */
@@ -997,8 +996,7 @@ static void chorus_run(Chorus *ch, uint32_t rate, float data[MAX_CH][MAX_GRAIN],
             for (uint32_t k = 0; k < phases; ++k) {                float ph = phase + (float)k / (float)phases;
                 ph -= floorf(ph);                float d = base + 1.0f + depth * sinf(6.2831855f * ph);
                 uint32_t di = (uint32_t)d;                float fr = d - (float)di;
-                float *line = lines + (size_t)k * CHORUS_LINE;
-                v = fr * line[(w + di + 1) & (CHORUS_LINE - 1)] + (1.0f - fr) * line[(w + di) & (CHORUS_LINE - 1)];
+                float *line = lines + (size_t)k * CHORUS_LINE;                v = fr * line[(w + di + 1) & (CHORUS_LINE - 1)] + (1.0f - fr) * line[(w + di) & (CHORUS_LINE - 1)];
                 line[w] = in + ch->feedback * v;
                 in = v;
             }
@@ -1206,7 +1204,7 @@ static int32_t guest_free(const Allocator *a, BufferInfo *info) {
 static ABI int32_t ngs2_system_create(const uint8_t *option, const Allocator *allocator, uintptr_t *out) {
     if (!out) return NGS2_ERR_OUT_ADDRESS;
     System *s = calloc(1, sizeof(*s));
-    if (!s) return NGS2_ERR_SYSTEM_MEMORY;
+    if (!s) return NGS2_ERR_SYSTEM_FAIL;
     s->magic = MAGIC_SYSTEM;
     s->grain = 256; s->max_grain = 512; s->rate = 48000;
     if (option) {
@@ -1339,7 +1337,7 @@ static int32_t rack_create(uintptr_t system, uint32_t rack_id, const uint8_t *op
     System *s = as_system(system);
     if (!s) { pthread_mutex_unlock(&lock); return NGS2_ERR_SYSTEM_HANDLE; }
     Rack *r = calloc(1, sizeof(*r));
-    if (!r) { pthread_mutex_unlock(&lock); return NGS2_ERR_SYSTEM_MEMORY; }
+    if (!r) { pthread_mutex_unlock(&lock); return NGS2_ERR_SYSTEM_FAIL; }
     r->magic = MAGIC_RACK;
     r->system = s;
     r->id = rack_id;
@@ -1369,7 +1367,7 @@ static int32_t rack_create(uintptr_t system, uint32_t rack_id, const uint8_t *op
         if (r->voices) for (uint32_t i = 0; i < r->max_voices; ++i) if (r->voices[i]) { voice_free(r->voices[i]); free(r->voices[i]); }
         free(r->voices); free(r);
         pthread_mutex_unlock(&lock);
-        return NGS2_ERR_SYSTEM_MEMORY;
+        return NGS2_ERR_SYSTEM_FAIL;
     }
     uint64_t required_buffer_size = CONTEXT_BUFFER_SIZE;
     int32_t size_result = rack_buffer_size(rack_id, option, &required_buffer_size);
@@ -1497,8 +1495,7 @@ static void voice_event(Voice *v, uint32_t event) {
         if (v->sampler && v->sampler->env_release) {
             Sampler *s = v->sampler;            s->releasing = 1;
             s->env_segment = s->env_forward;
-            s->env_position = 0;            s->env_start = s->env_level;        } else voice_stop(v);
-        break;    case EV_STOP:
+            s->env_position = 0;            s->env_start = s->env_level;        } else voice_stop(v);        break;    case EV_STOP:
     case EV_KILL:        if (v->sampler) voice_stop(v);
         else { voice_finish(v); v->state = ST_READY; v->stopped = 1; } /* buses stay set up */
         break;
@@ -1774,7 +1771,7 @@ static ABI int32_t ngs2_voice_control(uintptr_t handle, const ParamHeader *param
             }
             uintptr_t *new_visited = realloc(visited, new_capacity * sizeof(*visited));
             if (!new_visited) {
-                result = NGS2_ERR_SYSTEM_MEMORY;
+                result = NGS2_ERR_SYSTEM_FAIL;
                 break;
             }
             visited = new_visited;
@@ -1997,8 +1994,7 @@ static int decode_unit(Voice *v) {
         if (frame && s->byte + frame <= b->size) {            uint32_t n = (b->size - s->byte) / frame;
             if (n > UNIT_FRAMES) n = UNIT_FRAMES;            for (uint32_t i = 0; i < n; ++i)
                 for (uint32_t c = 0; c < MAX_CH; ++c)
-                    frames[i * MAX_CH + c] = c < ch ? pcm_sample(s->wave, b->data + s->byte + i * frame + c * bytes) : 0.0f;
-            produced = n; used = n * frame;        }
+                    frames[i * MAX_CH + c] = c < ch ? pcm_sample(s->wave, b->data + s->byte + i * frame + c * bytes) : 0.0f;            produced = n; used = n * frame;        }
     }
     if (!produced) { block_end(v); return 1; }   /* data exhausted before the sample count */    s->byte += used;
     s->decoded_bytes += used;
