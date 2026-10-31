@@ -772,6 +772,7 @@ static void test_perf(void) {
 }
 
 
+typedef ABI int32_t (*TestAllocHandler)(BufferInfo *);
 static ABI int32_t fail_guest_allocator(BufferInfo *info) {
     (void)info;
     return (int32_t)-12345;
@@ -790,6 +791,7 @@ static void test_ps4_api_validation(void) {
     memcpy(rev_option + 0x10, &unsupported_reverb_size, sizeof(unsupported_reverb_size));
     CHECK(query_buffer(0x2001, rev_option, &info) == (int32_t)0x804A0900, "unsupported reverb size code");
     CHECK(query_buffer(0x7777, NULL, &info) == (int32_t)0x804A0260, "invalid rack id code");
+    CHECK(voice_handle(g.sampler, 9999, &voice) == (int32_t)0x804A0302, "invalid voice index code");
 
     uintptr_t voice = 0;
     CHECK(voice_handle(g.sampler, 1, &voice) == 0, "voice for validation tests");
@@ -811,9 +813,13 @@ static void test_ps4_api_validation(void) {
     CHECK(voice_state(voice, state, 0x20) == (int32_t)0x804A0A06, "VoiceGetState size code");
     CHECK(voice_state(voice, state, sizeof(state)) == 0, "VoiceGetState documented size");
 
-    struct { int32_t (*alloc)(BufferInfo *); int32_t (*free)(BufferInfo *); uintptr_t user_data; } allocator = {fail_guest_allocator, NULL, 0};
+    struct { TestAllocHandler alloc, free; uintptr_t user_data; } allocator = {fail_guest_allocator, NULL, 0};
     uintptr_t failed_system = 0;
     CHECK(system_create(NULL, &allocator, &failed_system) == -12345, "guest allocator error is propagated");
+    uint8_t bad_system_option[0x40] = {0};
+    uint32_t invalid_rate = 12345;
+    memcpy(bad_system_option + 0x24, &invalid_rate, sizeof(invalid_rate));
+    CHECK(system_create(bad_system_option, NULL, &failed_system) == (int32_t)0x804A0201, "invalid system sample rate code");
     system_destroy(g.system, NULL);
 }
 
