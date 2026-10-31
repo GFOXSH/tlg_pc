@@ -497,8 +497,7 @@ static void biquad_design(Biquad *f, uint32_t rate) {
     float w = x < 0.001f ? 0.0062831853f : fminf(x, 0.49987f) * 6.2831855f;
     float q = f->q < 0.0001f ? 0.0001f : fminf(f->q, 32.0f);
     float s = sinf(w), cs = cosf(w);
-    float b0, b1, b2, a0, a1, a2;    switch (f->type) {
-    case 6: case 7: {   /* low / high shelf, level = linear gain */
+    float b0, b1, b2, a0, a1, a2;    switch (f->type) {    case 6: case 7: {   /* low / high shelf, level = linear gain */
         float A = sqrtf(fmaxf(f->level, 0.0001f)), beta = sqrtf(A) / q * s;
         if (f->type == 6) {
             b0 = A * ((A + 1) - (A - 1) * cs + beta); b1 = 2 * A * ((A - 1) - (A + 1) * cs); b2 = A * ((A + 1) - (A - 1) * cs - beta);
@@ -997,7 +996,6 @@ static void reverb_run(Reverb *r, uint32_t rate, float data[MAX_CH][MAX_GRAIN], 
         }
     }
     r->primed = 1;}
-
 /* ---- Chorus and delay (custom rack modules) ---- */
 static void chorus_run(Chorus *ch, uint32_t rate, float data[MAX_CH][MAX_GRAIN], uint32_t channels, uint32_t n) {
     if (!ch->line) return;
@@ -1497,8 +1495,7 @@ static void sampler_setup(Voice *v, const ParamHeader *p) {
     s->rate = u32_at(p, 16);
     s->config = u32_at(p, 20);
     if (s->wave_channels > MAX_CH) s->wave_channels = MAX_CH;
-    if (!s->rate) s->rate = v->rack->system->rate;
-    v->channels = s->wave_channels ? s->wave_channels : 1;
+    if (!s->rate) s->rate = v->rack->system->rate;    v->channels = s->wave_channels ? s->wave_channels : 1;
     s->pitch = 1.0f;
     s->env_forward = s->env_release = 0;
     s->env_level = 1.0f;
@@ -1742,7 +1739,7 @@ static ABI int32_t ngs2_voice_control(uintptr_t handle, const ParamHeader *param
     uint32_t count = 0;
     int32_t result = NGS2_OK;
     while (cursor) {
-        if ((cursor & (sizeof(uint32_t) - 1)) != 0 || cursor < 0x10000u) {
+        if ((cursor & (sizeof(uint32_t) - 1)) != 0 || cursor > UINTPTR_MAX - sizeof(ParamHeader)) {
             result = NGS2_ERR_VOICE_CONTROL_ADDRESS;
             break;
         }
@@ -1997,8 +1994,7 @@ static void fifo_fill(Voice *v, uint32_t need) {
             s->fifo_len -= drop;
             s->pos -= drop;
             need -= drop;
-            continue;
-        }
+            continue;        }
         if ((s->wave == WAVE_ATRAC9 && !s->at9_ok) || (s->wave != WAVE_VAG && s->wave != WAVE_ATRAC9 && !pcm_bytes(s->wave))) {
             s->count = 0;   /* nothing this mixer can decode: the voice ends */
             s->source_done = 1;
