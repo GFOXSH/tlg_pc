@@ -497,8 +497,7 @@ static float mb_to_gain(float mb) { return mb < -10000.0f ? 0.0f : powf(10.0f, m
 /* Biquad coefficients c = {b0, b1, b2, -a1, -a2} / a0 (RBJ designs; 0x20 = direct coefficients). */
 static void biquad_design(Biquad *f, uint32_t rate) {
     float *c = f->c;
-    f->dirty = 0;
-    if (f->type == 0x20) { memcpy(c, f->direct, sizeof(f->direct)); return; }    if (f->type < 1 || f->type > 10) { c[0] = 1.0f; c[1] = c[2] = c[3] = c[4] = 0.0f; return; }    float x = f->fc / (float)rate;    float w = x < 0.001f ? 0.0062831853f : fminf(x, 0.49987f) * 6.2831855f;    float q = f->q < 0.0001f ? 0.0001f : fminf(f->q, 32.0f);    float s = sinf(w), cs = cosf(w);    float b0, b1, b2, a0, a1, a2;    switch (f->type) {    case 6: case 7: {   /* low / high shelf, level = linear gain */        float A = sqrtf(fmaxf(f->level, 0.0001f)), beta = sqrtf(A) / q * s;        if (f->type == 6) {            b0 = A * ((A + 1) - (A - 1) * cs + beta); b1 = 2 * A * ((A - 1) - (A + 1) * cs); b2 = A * ((A + 1) - (A - 1) * cs - beta);            a0 = (A + 1) + (A - 1) * cs + beta; a1 = -2 * ((A - 1) + (A + 1) * cs); a2 = (A + 1) + (A - 1) * cs - beta;        } else {            b0 = A * ((A + 1) + (A - 1) * cs + beta); b1 = -2 * A * ((A - 1) + (A + 1) * cs); b2 = A * ((A + 1) + (A - 1) * cs - beta);            a0 = (A + 1) - (A - 1) * cs + beta; a1 = 2 * ((A - 1) - (A + 1) * cs); a2 = (A + 1) - (A - 1) * cs - beta;        }        break;
+    f->dirty = 0;    if (f->type == 0x20) { memcpy(c, f->direct, sizeof(f->direct)); return; }    if (f->type < 1 || f->type > 10) { c[0] = 1.0f; c[1] = c[2] = c[3] = c[4] = 0.0f; return; }    float x = f->fc / (float)rate;    float w = x < 0.001f ? 0.0062831853f : fminf(x, 0.49987f) * 6.2831855f;    float q = f->q < 0.0001f ? 0.0001f : fminf(f->q, 32.0f);    float s = sinf(w), cs = cosf(w);    float b0, b1, b2, a0, a1, a2;    switch (f->type) {    case 6: case 7: {   /* low / high shelf, level = linear gain */        float A = sqrtf(fmaxf(f->level, 0.0001f)), beta = sqrtf(A) / q * s;        if (f->type == 6) {            b0 = A * ((A + 1) - (A - 1) * cs + beta); b1 = 2 * A * ((A - 1) - (A + 1) * cs); b2 = A * ((A + 1) - (A - 1) * cs - beta);            a0 = (A + 1) + (A - 1) * cs + beta; a1 = -2 * ((A - 1) + (A + 1) * cs); a2 = (A + 1) + (A - 1) * cs - beta;        } else {            b0 = A * ((A + 1) + (A - 1) * cs + beta); b1 = -2 * A * ((A - 1) + (A + 1) * cs); b2 = A * ((A + 1) + (A - 1) * cs - beta);            a0 = (A + 1) - (A - 1) * cs + beta; a1 = 2 * ((A - 1) - (A + 1) * cs); a2 = (A + 1) - (A - 1) * cs - beta;        }        break;
     }
     case 8: {           /* peaking EQ */
         float A = sqrtf(fmaxf(f->level, 0.0001f)), alpha = s / (2 * q);
@@ -997,8 +996,7 @@ static void chorus_run(Chorus *ch, uint32_t rate, float data[MAX_CH][MAX_GRAIN],
                 ph -= floorf(ph);                float d = base + 1.0f + depth * sinf(6.2831855f * ph);
                 uint32_t di = (uint32_t)d;                float fr = d - (float)di;
                 float *line = lines + (size_t)k * CHORUS_LINE;                v = fr * line[(w + di + 1) & (CHORUS_LINE - 1)] + (1.0f - fr) * line[(w + di) & (CHORUS_LINE - 1)];
-                line[w] = in + ch->feedback * v;                in = v;
-            }
+                line[w] = in + ch->feedback * v;                in = v;            }
             data[c][i] = dry * x + wet * v;
             phase += step;
             w = (w - 1) & (CHORUS_LINE - 1);
@@ -1497,8 +1495,7 @@ static void voice_event(Voice *v, uint32_t event) {
             s->env_segment = s->env_forward;
             s->env_position = 0;            s->env_start = s->env_level;        } else voice_stop(v);        break;    case EV_STOP:
     case EV_KILL:        if (v->sampler) voice_stop(v);
-        else { voice_finish(v); v->state = ST_READY; v->stopped = 1; } /* buses stay set up */        break;
-    case EV_PAUSE: if (v->state == ST_PLAYING) v->paused = 1; break;
+        else { voice_finish(v); v->state = ST_READY; v->stopped = 1; } /* buses stay set up */        break;    case EV_PAUSE: if (v->state == ST_PLAYING) v->paused = 1; break;
     case EV_RESUME: v->paused = 0; break;
     default: note("unknown event %u", event); break;
     }
@@ -1747,6 +1744,7 @@ static ABI int32_t ngs2_voice_control(uintptr_t handle, const ParamHeader *param
     pthread_mutex_lock(&lock);
     Voice *v = as_voice(handle);
     if (!v) { pthread_mutex_unlock(&lock); return NGS2_ERR_VOICE_HANDLE; }
+    if (!params) { pthread_mutex_unlock(&lock); return NGS2_ERR_VOICE_CONTROL_ADDRESS; }
     uintptr_t cursor = (uintptr_t)params;
     uintptr_t *visited = NULL;
     size_t count = 0, capacity = 0;
@@ -1997,8 +1995,7 @@ static int decode_unit(Voice *v) {
     }
     if (!produced) { block_end(v); return 1; }   /* data exhausted before the sample count */    s->byte += used;
     s->decoded_bytes += used;    s->waveform_pointer = b->data + s->byte;
-    fifo_push(s, ch, frames, produced);
-    if (!s->out_left) block_end(v);    return 1;
+    fifo_push(s, ch, frames, produced);    if (!s->out_left) block_end(v);    return 1;
 }/* Makes frame `need` available (or marks the source done). */
 static void fifo_fill(Voice *v, uint32_t need) {    Sampler *s = v->sampler;    while (s->fifo_len <= need && !s->source_done) {
         if (s->fifo_len + UNIT_FRAMES > FIFO_FRAMES) {
