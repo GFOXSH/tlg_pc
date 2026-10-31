@@ -868,6 +868,7 @@ static void test_ps4_api_validation(void) {
     }
     CHECK(voice_control(voice, (const void *)long_chain) == 0, "long acyclic VoiceControl chain");
     CHECK(voice_control(voice, (const uint8_t *)malformed + 1) == (int32_t)0x804A0309, "unaligned VoiceControl address code");
+    CHECK(voice_control(voice, NULL) == (int32_t)0x804A0309, "null VoiceControl address code");
 
     uint8_t state[0x30];
     CHECK(voice_state(voice, NULL, sizeof(state)) == (int32_t)0x804A0053, "VoiceGetState output address code");
