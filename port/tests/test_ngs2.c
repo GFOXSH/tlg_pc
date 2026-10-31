@@ -857,6 +857,14 @@ static void test_ps4_api_validation(void) {
     next = -8;
     memcpy(malformed + 10, &next, sizeof(next));
     CHECK(voice_control(voice, malformed) == (int32_t)0x804A030B, "VoiceControl cycle code");
+    uint8_t long_chain[300 * 8] __attribute__((aligned(8))) = {0};
+    for (uint32_t i = 0; i < 300; ++i) {
+        uint16_t node_size = 8;
+        int16_t node_next = i == 299 ? 0 : 8;
+        memcpy(long_chain + i * 8, &node_size, sizeof(node_size));
+        memcpy(long_chain + i * 8 + 2, &node_next, sizeof(node_next));
+    }
+    CHECK(voice_control(voice, (const void *)long_chain) == 0, "long acyclic VoiceControl chain");
     CHECK(voice_control(voice, (const uint8_t *)malformed + 1) == (int32_t)0x804A0309, "unaligned VoiceControl address code");
 
     uint8_t state[0x30];
