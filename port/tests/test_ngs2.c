@@ -646,6 +646,10 @@ static void test_reverb_setup_validation(void) {
     uint8_t option[0x88] = {0};
     uintptr_t rv;
     CHECK(rack_create(g.system, 0x2001, option, NULL, &rv) == 0, "reverb validation rack");
+    uint32_t play = 0;
+    CHECK(raw_param(rv, 0x6, &play, sizeof(play)) == (int32_t)0x804A8351,
+          "PLAY before REVERB_SETUP returns INVALID_VOICE_ACCESS");
+    CHECK(flags_of(rv) == 0, "PLAY before setup leaves reverb voice Empty");
 
     static const uint32_t valid[][2] = {{1, 1}, {1, 2}, {2, 6}, {6, 2}, {8, 8}};
     for (size_t i = 0; i < sizeof(valid) / sizeof(valid[0]); ++i)
@@ -694,7 +698,7 @@ static void test_reverb_setup_reset(void) {
     uintptr_t rv;
     CHECK(rack_create(g.system, 0x2001, option, NULL, &rv) == 0, "reverb setup-reset rack");
     reverb_setup(rv, 8, 8);
-    i3dl2(rv, 0, 1, 0, 0, 0, 1, 0.5f, -10000, 0.02f, -10000, 0.04f, 100, 100, 5000);
+    i3dl2(rv, 1, 0, -1000, -900, 0, 1.0f, 0.5f, -602, 0.02f, -302, 0.04f, 100, 100, 5000);
     patch(rv, 0, g.mastering);
     event(rv, 0);
 
@@ -710,17 +714,25 @@ static void test_reverb_setup_reset(void) {
     patch(sampler, 0, rv);
     event(sampler, 0);
 
-    render(&g);
-    CHECK(max_abs_interleaved(out8, GRAIN, 8, 0, 0, GRAIN) > 0.1f,
-          "configured dry path is audible before repeated setup");
+    static float history[GRAIN * 240];
+    for (uint32_t r = 0; r < 240; ++r) {
+        render(&g);
+        for (uint32_t i = 0; i < GRAIN; ++i) history[r * GRAIN + i] = out8[i * 8];
+    }
+    CHECK(max_abs_interleaved(history, GRAIN * 240, 1, 0, 0, GRAIN * 240) > 1e-4f,
+          "reverb has accumulated an audible tail before repeated setup");
+    CHECK((flags_of(sampler) & 0x1u) == 0, "sampler input has finished before repeated setup");
 
-    /* A repeated SETUP clears ports and restores the AnyPS5 I3DL2 defaults. */
+    /* Restore audible wet-only parameters without new input: any non-zero result
+     * proves that a delay/filter history survived the repeated Setup. */
     reverb_setup(rv, 8, 8);
+    i3dl2(rv, 1, 0, -1000, -900, 0, 1.0f, 0.5f, -602, 0.02f, -302, 0.04f, 100, 100, 5000);
     patch(rv, 0, g.mastering);
     event(rv, 0);
-    render(&g);
-    CHECK(max_abs_interleaved(out8, GRAIN, 8, 0, 0, GRAIN) == 0.0f,
-          "repeated setup restores default dry/wet and clears stale routing");
+    static float after[GRAIN * 8];
+    capture(&g, after, 8, 0);
+    CHECK(max_abs_interleaved(after, GRAIN * 8, 1, 0, 0, GRAIN * 8) == 0.0f,
+          "repeated setup clears ER, comb, allpass and Room-HF histories");
     system_destroy(g.system, NULL);
 }
 
@@ -747,6 +759,13 @@ static void test_reverb_stop_kill(void) {
     event(sampler, 0);
     for (uint32_t i = 0; i < 32; ++i) render(&g);
 
+    event(rv, 4); /* PS4 KICK_EVENT PAUSE */
+    render(&g);
+    CHECK(flags_of(rv) == 0x5u, "paused reverb reports INUSE|PAUSED without PLAYING");
+    event(rv, 5); /* PS4 KICK_EVENT RESUME */
+    render(&g);
+    CHECK(flags_of(rv) == 0x3u, "resumed reverb reports INUSE|PLAYING");
+
     event(rv, 2); /* PS4 KICK_EVENT STOP */
     CHECK((flags_of(rv) & 0x8u) != 0, "STOP exposes the pending stopped state");
     render(&g);
@@ -768,6 +787,262 @@ static void test_reverb_stop_kill(void) {
           "KILL clears the reverb history before the next PLAY");
     system_destroy(g.system, NULL);
 }
+
+
+typedef struct {
+    float wet, dry;
+    int32_t room, room_hf;
+    uint32_t pattern;
+    float decay, ratio;
+    int32_t reflections;
+    float refl_delay;
+    int32_t reverb;
+    float rev_delay, diffusion, density, hf_ref;
+} ReverbTestParams;
+
+typedef struct {
+    uint32_t frame;
+    float samples[MAX_CH];
+} ReverbExpected;
+
+static void set_reverb_params(uintptr_t voice, const ReverbTestParams *p) {
+    i3dl2(voice, p->wet, p->dry, p->room, p->room_hf, p->pattern, p->decay, p->ratio,
+          p->reflections, p->refl_delay, p->reverb, p->rev_delay, p->diffusion, p->density, p->hf_ref);
+}
+
+static float *render_reverb_audio(uint32_t input_channels, uint32_t output_channels,
+                                  const int16_t *pcm, uint32_t pcm_frames,
+                                  const ReverbTestParams *initial, int change_grain,
+                                  const ReverbTestParams *changed, uint32_t frames,
+                                  const char *case_name) {
+    CHECK(frames % GRAIN == 0, "%s frame count is grain aligned", case_name);
+    Graph g = graph_new(1);
+    u32s(g.master_voice, 0x30000000, output_channels, 0);
+
+    uint8_t option[0x88] = {0};
+    uintptr_t rv = 0, sampler = 0;
+    CHECK(rack_create(g.system, 0x2001, option, NULL, &rv) == 0, "%s reverb rack", case_name);
+    reverb_setup(rv, input_channels, output_channels);
+    set_reverb_params(rv, initial);
+    patch(rv, 0, g.mastering);
+    event(rv, 0);
+
+    CHECK(voice_handle(g.sampler, 2, &sampler) == 0, "%s sampler handle", case_name);
+    setup_sampler(sampler, 0x12, input_channels, 48000, 0);
+    Block block = {0, pcm_frames * input_channels * (uint32_t)sizeof(int16_t), 0, 0, pcm_frames, 0, 0};
+    add_blocks(sampler, pcm, &block, 1);
+    float identity[MAX_CH * MAX_CH] = {0};
+    for (uint32_t c = 0; c < input_channels; ++c) identity[c * input_channels + c] = 1.0f;
+    matrix(sampler, 0, identity, input_channels * input_channels);
+    u32s(sampler, 3, 0, 0);
+    patch(sampler, 0, rv);
+    event(sampler, 0);
+
+    float *all = (float *)calloc((size_t)frames * output_channels, sizeof(float));
+    CHECK(all != NULL, "%s output allocation", case_name);
+    if (all) {
+        float output[MAX_CH * GRAIN];
+        RenderBuffer buffer = {output, (uint64_t)sizeof(float) * GRAIN * output_channels, 0x18, output_channels};
+        for (uint32_t grain = 0; grain < frames / GRAIN; ++grain) {
+            if (changed && (int)grain == change_grain) set_reverb_params(rv, changed);
+            CHECK(system_render(g.system, &buffer, 1) == 0, "%s render grain %u", case_name, grain);
+            memcpy(all + (size_t)grain * GRAIN * output_channels, output, sizeof(float) * GRAIN * output_channels);
+        }
+    }
+    system_destroy(g.system, NULL);
+    return all;
+}
+
+static void test_reverb_reference_case(uint32_t input_channels, uint32_t output_channels,
+                                       const int16_t *pcm, uint32_t pcm_frames,
+                                       const ReverbTestParams *initial, int change_grain,
+                                       const ReverbTestParams *changed, uint32_t frames,
+                                       const ReverbExpected *expected, size_t expected_count,
+                                       const char *case_name) {
+    float *all = render_reverb_audio(input_channels, output_channels, pcm, pcm_frames, initial,
+                                     change_grain, changed, frames, case_name);
+    CHECK(all != NULL, "%s output is available", case_name);
+    if (!all) return;
+    for (size_t f = 0; f < expected_count; ++f) {
+        for (uint32_t c = 0; c < output_channels; ++c) {
+            const float actual = all[(size_t)expected[f].frame * output_channels + c];
+            const float wanted = expected[f].samples[c];
+            const float tolerance = 2e-6f + fabsf(wanted) * 1e-4f;
+            CHECK(fabsf(actual - wanted) <= tolerance,
+                  "%s frame %u channel %u: got %.10g, expected %.10g (tol %.3g)",
+                  case_name, expected[f].frame, c, actual, wanted, tolerance);
+        }
+    }
+    free(all);
+}
+
+static void test_reverb_sample_reference(void) {
+    const ReverbTestParams cave = {1.0f, 0.0f, -1000, 0, 0, 2.91f, 1.3f, -602, 0.015f, -302, 0.022f, 100.0f, 100.0f, 5000.0f};
+    ReverbTestParams changed = cave;
+    changed.pattern = 5;
+    changed.decay = 0.7f;
+    changed.ratio = 0.6f;
+    changed.refl_delay = 0.004f;
+    changed.rev_delay = 0.03f;
+    changed.room_hf = -900;
+    changed.wet = 0.6f;
+    changed.dry = 0.4f;
+
+    static const ReverbExpected stereo_base[] = {
+        {723, {0.0687032491f, 0.0687032491f}}, {1055, {0.0392590016f, 0.0392590016f}},
+        {1417, {0.0131517649f, 0.0131517649f}}, {1779, {0.0098147504f, 0.0098147504f}},
+        {2500, {0.0f, 0.0f}}, {4000, {1.45101382e-07f, -1.15403088e-06f}},
+        {6000, {0.000655628915f, 3.03641864e-05f}}, {9000, {0.000400578661f, -0.000684358703f}},
+        {12000, {0.000191548112f, 0.000220489033f}}, {16000, {0.000210488462f, 0.000146183695f}},
+        {20000, {2.41150738e-05f, -0.000864534522f}}, {26000, {0.000125532999f, -0.000234790568f}},
+        {32000, {-0.000462158496f, 4.56995949e-05f}},
+    };
+    static const ReverbExpected stereo_changed[] = {
+        {723, {0.0687032491f, 0.0687032491f}}, {1055, {0.0392590016f, 0.0392590016f}},
+        {1417, {0.0131517649f, 0.0131517649f}}, {1779, {4.38156894e-05f, 4.38156894e-05f}},
+        {2500, {0.0f, 0.0f}}, {4000, {-1.60370582e-05f, -4.44955149e-05f}},
+        {6000, {1.02755057e-05f, 8.34046841e-06f}}, {9000, {1.1641363e-05f, -4.69685149e-06f}},
+        {12000, {3.57917179e-06f, -2.34550089e-06f}}, {16000, {-8.00212234e-08f, 3.19533115e-06f}},
+        {20000, {5.66619519e-07f, 4.26969848e-07f}}, {26000, {1.46052287e-07f, -2.44572629e-08f}},
+        {32000, {-4.45668853e-08f, 1.51349102e-08f}},
+    };
+    static const ReverbExpected surround[] = {
+        {6000, {-0.000167909253f, -0.000179917421f, -0.000647808949f, 0.0f, 3.22720189e-05f, 0.000213803389f}},
+        {9000, {8.47857882e-05f, 8.62322413e-05f, -0.000100753634f, 0.0f, 0.000109430795f, -0.000122895101f}},
+        {12000, {4.37544441e-05f, 3.58103216e-06f, -0.00013746327f, 0.0f, 9.3237948e-05f, -0.00013529828f}},
+        {16000, {8.63046807e-08f, 1.62214419e-05f, 8.89167641e-05f, 0.0f, 1.02178528e-05f, 0.000201705057f}},
+        {20000, {-9.6526619e-06f, -2.73812566e-05f, -1.92096536e-07f, 0.0f, -0.000116049101f, 6.94858772e-06f}},
+        {26000, {1.27750207e-06f, -1.59169917e-06f, 5.30674515e-05f, 0.0f, -3.59285696e-05f, 5.16466662e-06f}},
+        {32000, {3.5737969e-06f, 4.19655044e-06f, -2.30460955e-07f, 0.0f, 1.16596939e-05f, 1.14889262e-05f}},
+    };
+
+    int16_t stereo_pcm[4096 * 2] = {0};
+    stereo_pcm[0] = 16384;
+    stereo_pcm[1] = 12384;
+    test_reverb_reference_case(2, 2, stereo_pcm, 4096, &cave, -1, NULL, 32256,
+                               stereo_base, sizeof(stereo_base) / sizeof(stereo_base[0]), "AnyPS5 stereo I3DL2");
+    test_reverb_reference_case(2, 2, stereo_pcm, 4096, &cave, 6, &changed, 32256,
+                               stereo_changed, sizeof(stereo_changed) / sizeof(stereo_changed[0]), "AnyPS5 stereo live parameter crossfade");
+
+    ReverbTestParams six = {1.0f, 0.2f, -200, -300, 12, 1.0f, 0.9f, -100, 0.03f, -100, 0.04f, 70.0f, 90.0f, 4000.0f};
+    int16_t surround_pcm[4096 * 6] = {0};
+    for (uint32_t c = 0; c < 6; ++c) surround_pcm[c] = (int16_t)(16384 - 4000 * (int32_t)c);
+    test_reverb_reference_case(6, 6, surround_pcm, 4096, &six, -1, NULL, 32256,
+                               surround, sizeof(surround) / sizeof(surround[0]), "AnyPS5 5.1 I3DL2");
+
+    ReverbTestParams denser = cave;
+    denser.density = 99.999f;
+    int16_t noise_pcm[4096 * 2] = {0};
+    uint32_t seed = 1;
+    for (uint32_t i = 0; i < 3000 * 2; ++i) {
+        seed = seed * 1664525u + 1013904223u;
+        noise_pcm[i] = (int16_t)((int32_t)((seed >> 16) & 0x3fffu) - 0x2000);
+    }
+    static const ReverbExpected density_change[] = {
+        {5200, {-0.00942458585f, -0.0064059021f}}, {6000, {0.0024807602f, 0.00317249796f}},
+        {8000, {0.00102439919f, 0.00105210941f}}, {12000, {1.63059376e-05f, 6.10309735e-06f}},
+        {20000, {-1.08853078e-06f, -2.99162899e-08f}},
+    };
+    test_reverb_reference_case(2, 2, noise_pcm, 4096, &cave, 20, &denser, 32256,
+                               density_change, sizeof(density_change) / sizeof(density_change[0]), "AnyPS5 density change crossfade");
+}
+
+static void test_reverb_conversion_reference(void) {
+    ReverbTestParams mixed = {1.0f, 1.0f, -1000, 0, 0, 2.91f, 1.3f, -602, 0.015f, -302, 0.022f, 100.0f, 100.0f, 5000.0f};
+    int16_t stereo_pcm[4096 * 2] = {0};
+    uint32_t seed = 1;
+    for (uint32_t i = 0; i < 3000 * 2; ++i) {
+        seed = seed * 1664525u + 1013904223u;
+        stereo_pcm[i] = (int16_t)((int32_t)((seed >> 16) & 0x3fffu) - 0x2000);
+    }
+    float *stereo = render_reverb_audio(2, 2, stereo_pcm, 4096, &mixed, -1, NULL, 8192, "stereo conversion baseline");
+    CHECK(stereo != NULL, "stereo baseline output");
+    for (uint32_t outputs = 6; outputs <= 8; outputs += 2) {
+        float *surround = render_reverb_audio(2, outputs, stereo_pcm, 4096, &mixed, -1, NULL, 8192, "stereo surround conversion");
+        CHECK(surround != NULL, "%u-channel surround output", outputs);
+        if (stereo && surround) {
+            float sides = 0.0f, lfe = 0.0f;
+            for (uint32_t frame = 0; frame < 8192; ++frame) {
+                for (uint32_t c = 0; c < 2; ++c) {
+                    const float actual = surround[(size_t)frame * outputs + c];
+                    const float wanted = stereo[(size_t)frame * 2 + c];
+                    CHECK(fabsf(actual - wanted) <= 2e-6f + fabsf(wanted) * 1e-4f,
+                          "%u-channel map front frame %u channel %u", outputs, frame, c);
+                }
+                for (uint32_t c = 2; c < outputs; ++c) {
+                    const float value = fabsf(surround[(size_t)frame * outputs + c]);
+                    if (c == 3) { if (value > lfe) lfe = value; }
+                    else if (value > sides) sides = value;
+                }
+            }
+            CHECK(sides > 1e-4f, "%u-channel conversion produces surround wet energy", outputs);
+            CHECK(lfe == 0.0f, "%u-channel conversion keeps LFE dry and silent", outputs);
+        }
+        free(surround);
+    }
+    free(stereo);
+
+    ReverbTestParams dry = mixed;
+    dry.wet = 0.0f;
+    static const int16_t levels[6] = {8192, 4096, 2048, 1024, 512, 256};
+    int16_t six_pcm[4096 * 6];
+    for (size_t i = 0; i < sizeof(six_pcm) / sizeof(six_pcm[0]); ++i) six_pcm[i] = levels[i % 6];
+    float *down = render_reverb_audio(6, 2, six_pcm, 4096, &dry, -1, NULL, 2048, "5.1 stereo fixed downmix");
+    CHECK(down != NULL, "5.1 to stereo downmix output");
+    if (down) {
+        const float half = 0.70710678118f;
+        const float left = (8192.0f + 2048.0f * half + 512.0f * 0.5f) / 32768.0f;
+        const float right = (4096.0f + 2048.0f * half + 256.0f * 0.5f) / 32768.0f;
+        CHECK(fabsf(down[1024 * 2] - left) <= left * 1e-5f &&
+              fabsf(down[1024 * 2 + 1] - right) <= right * 1e-5f,
+              "5.1 to stereo downmix coefficients match AnyPS5");
+        free(down);
+    }
+}
+
+static int reverb_fx_calls;
+static ABI int32_t reverb_silence_probe(UserFxContext *ctx) {
+    ++reverb_fx_calls;
+    for (uint32_t c = 0; c < ctx->num_channels; ++c)
+        for (uint32_t i = 0; i < ctx->num_grain_samples; ++i)
+            ctx->channels[c][i] = 0.25f;
+    return 0;
+}
+
+static void test_reverb_audible_graph_flag(void) {
+    Graph g = graph_new(1);
+    uint8_t option[0x88] = {0};
+    uintptr_t rv = 0, sampler = 0;
+    CHECK(rack_create(g.system, 0x2001, option, NULL, &rv) == 0, "silent reverb rack");
+    reverb_setup(rv, 8, 8);
+    i3dl2(rv, 0.0f, 0.0f, -1000, 0, 0, 1.0f, 0.5f, -602, 0.015f, -302, 0.022f, 100.0f, 100.0f, 5000.0f);
+    patch(rv, 0, g.submixer);
+    event(rv, 0);
+
+    struct { uintptr_t handler, data0, data1, data2; } fx = {(uintptr_t)reverb_silence_probe, 0, 0, 0};
+    param(g.sub_voice, 0x20000004, &fx, sizeof(fx));
+
+    CHECK(voice_handle(g.sampler, 2, &sampler) == 0, "silent reverb sampler");
+    static int16_t pcm[256 * 8];
+    for (size_t i = 0; i < sizeof(pcm) / sizeof(pcm[0]); ++i) pcm[i] = 12000;
+    setup_sampler(sampler, 0x12, 8, 48000, 0);
+    Block block = {0, sizeof(pcm), 0, 0, 256, 0, 0};
+    add_blocks(sampler, pcm, &block, 1);
+    float identity[MAX_CH * MAX_CH] = {0};
+    for (uint32_t c = 0; c < 8; ++c) identity[c * 8 + c] = 1.0f;
+    matrix(sampler, 0, identity, 64);
+    u32s(sampler, 3, 0, 0);
+    patch(sampler, 0, rv);
+    event(sampler, 0);
+
+    reverb_fx_calls = 0;
+    render(&g);
+    CHECK(reverb_fx_calls == 0, "silent reverb output is not forwarded to downstream submixer FX");
+    CHECK(max_abs_interleaved(out8, GRAIN, 8, 0, 0, GRAIN) == 0.0f,
+          "downstream FX cannot turn an inaudible reverb voice into graph output");
+    system_destroy(g.system, NULL);
+}
+
 
 static void test_custom(void) {
     Graph g = graph_new(1);
@@ -930,6 +1205,9 @@ int main(void) {
     test_dynamics();
     test_reverb();
     test_reverb_setup_validation();
+    test_reverb_sample_reference();
+    test_reverb_conversion_reference();
+    test_reverb_audible_graph_flag();
     test_reverb_setup_reset();
     test_reverb_stop_kill();
     test_custom();

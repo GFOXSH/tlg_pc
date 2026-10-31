@@ -52,6 +52,7 @@
 #define NGS2_ERR_HANDLE ((int32_t)0x804A0230)
 #define NGS2_ERR_ARG ((int32_t)0x804A0201)
 #define NGS2_ERR_MEMORY ((int32_t)0x804A0050)
+#define NGS2_ERR_VOICE_ACCESS ((int32_t)0x804A8351)
 
 #define MAGIC_SYSTEM UINT32_C(0x4e325359)
 #define MAGIC_RACK UINT32_C(0x4e325241)
@@ -459,7 +460,10 @@ static void note_unknown(uint32_t rack, uint32_t id, uint32_t size) {
  * Behaviour follows the console module's processing (studied in the firmware binary): the same
  * filter designs, curves, block sizes and parameter clamps, written anew here. */
 static float clampf(float x, float lo, float hi) { return x < lo ? lo : x > hi ? hi : x; }
-static float mb_to_gain(float mb) { return mb < -10000.0f ? 0.0f : powf(10.0f, mb / 2000.0f); }
+static float mb_to_gain(float mb) {
+    if (mb < -10000.0f) return 0.0f;
+    return (float)pow(10.0, (double)(mb * 0.0005f));
+}
 
 /* Biquad coefficients c = {b0, b1, b2, -a1, -a2} / a0 (RBJ designs; 0x20 = direct coefficients). */
 static void biquad_design(Biquad *f, uint32_t rate) {
@@ -817,9 +821,9 @@ static void reverb_design(Reverb *r, uint32_t rate) {
     r->dirty = 0;
     const uint32_t pattern = r->pattern % 8;
     const uint32_t size = r->er_length;
-    const uint32_t early_samples = (uint32_t)(r->reflections_delay * (float)rate + 0.5f);
+    const uint32_t early_samples = (uint32_t)(r->reflections_delay * (float)rate * 1000.0f * 0.001f + 0.5f);
     const uint32_t early = early_samples < size ? early_samples : size;
-    const uint32_t late_samples = (uint32_t)((r->reflections_delay + r->reverb_delay) * (float)rate + 0.5f);
+    const uint32_t late_samples = (uint32_t)((r->reflections_delay + r->reverb_delay) * (float)rate * 1000.0f * 0.001f + 0.5f);
     const uint32_t late = late_samples < size ? late_samples : size;
     const uint32_t last = (uint32_t)((float)rate * er_span[pattern] * 0.001f + 0.5f);
     const uint32_t limit = r->pattern > 7 ? size : late;
@@ -833,7 +837,7 @@ static void reverb_design(Reverb *r, uint32_t rate) {
         r->tap_gain[tap] = r->tap_delay[tap] == previous ? 0.0f : er_gain[pattern][tap - 1];
         previous = r->tap_delay[tap];
     }
-    const uint32_t reverb_samples = (uint32_t)(r->reverb_delay * (float)rate + 0.5f);
+    const uint32_t reverb_samples = (uint32_t)(r->reverb_delay * (float)rate * 1000.0f * 0.001f + 0.5f);
     r->tap_delay[4] = early + reverb_samples < size ? early + reverb_samples : size;
     r->tap_gain[4] = 1.0f;
 
@@ -908,8 +912,8 @@ static void reverb_set_i3dl2(Reverb *r, const ParamHeader *p, float (*f)(const P
     r->hf_reference = clampf(f(p, 60), 20.0f, 20000.0f);
     r->dirty = 1;
 }
-static void reverb_run(Reverb *r, uint32_t rate, float data[MAX_CH][MAX_GRAIN], uint32_t in_channels,
-                       uint32_t out_channels, uint32_t n) {
+static int reverb_run(Reverb *r, uint32_t rate, float data[MAX_CH][MAX_GRAIN], uint32_t in_channels,
+                      uint32_t out_channels, uint32_t n) {
     const int reset = r->reset;
     if (reset) reverb_reset_state(r);
     const int changed = r->dirty;
@@ -1029,8 +1033,13 @@ static void reverb_run(Reverb *r, uint32_t rate, float data[MAX_CH][MAX_GRAIN], 
         r->channel_wet[c] = r->wet;
         r->channel_dry[c] = r->dry;
     }
+    int audible = 0;
+    for (uint32_t c = 0; c < out_channels && !audible; ++c)
+        for (uint32_t i = 0; i < n; ++i)
+            if (data[c][i] != 0.0f) { audible = 1; break; }
     r->reset = 0;
     r->dirty = 0;
+    return audible;
 }
 
 /* ---- Chorus and delay (custom rack modules) ---- */
@@ -1766,6 +1775,8 @@ static int reverb_i3dl2_has_nan(const ParamHeader *p) {
     return 0;
 }
 
+/* The PS4 0x88-byte REVERB rack option has no max_channels member. Do not
+ * reinterpret its +0x2c port-count field as AnyPS5's PS5-specific max_channels. */
 static int reverb_channel_count_valid(uint32_t channels) {
     return channels == 1 || channels == 2 || channels == 6 || channels == 8;
 }
@@ -1778,6 +1789,15 @@ static ABI int32_t ngs2_voice_control(uintptr_t handle, const ParamHeader *param
     for (int guard = 0; p && guard < 256; ++guard) {
         const ParamHeader *h = (const ParamHeader *)p;
         if (h->size >= sizeof(ParamHeader)) {
+            if (h->id == 0x6 && h->size < 0x0c) {
+                pthread_mutex_unlock(&lock);
+                return NGS2_ERR_ARG;
+            }
+            if (v->rack->kind == KIND_REVERB && h->id == 0x6 &&
+                u32_at(h, 8) == EV_PLAY && v->channels == 0) {
+                pthread_mutex_unlock(&lock);
+                return NGS2_ERR_VOICE_ACCESS;
+            }
             if (v->rack->kind == KIND_REVERB && h->id == 0x20010000) {
                 if (h->size < 0x18 || !reverb_channel_count_valid(u32_at(h, 8)) ||
                     !reverb_channel_count_valid(u32_at(h, 12)) || u32_at(h, 16) != 0) {
@@ -1803,7 +1823,7 @@ static uint32_t voice_flags(const Voice *v) {
     switch (v->state) {
     case ST_READY: return FLAG_INUSE;
     case ST_PLAYING: {
-        uint32_t f = FLAG_INUSE | FLAG_PLAYING;
+        uint32_t f = FLAG_INUSE | ((v->reverb && v->paused) ? 0u : FLAG_PLAYING);
         if (v->paused) f |= FLAG_PAUSED;
         if (v->stop_transition) f |= FLAG_STOPPED;
         if (v->sampler && v->sampler->source_done && !v->sampler->releasing) f |= FLAG_EMPTY;
@@ -2192,13 +2212,21 @@ static void process_bus(Voice *v, uint32_t n) {
     float (*data)[MAX_GRAIN] = (float (*)[MAX_GRAIN])v->input;
     uint32_t kind = v->rack->kind, rate = v->rack->system->rate;
     uint32_t out_ch = kind == KIND_REVERB || kind == KIND_CUSTOM ? v->out_channels : v->channels;
+    int reverb_audible = 1;
     /* A submixer with nothing mixed in this render stays silent (its filter tails are far
      * below audibility); reverb and custom racks keep running for their tails. */
     if (kind == KIND_SUBMIXER && !v->fed) { v->peak = 0.0f; return; }
     v->has_input = 1;   /* effects write into the input buffer: clear it before the next render */
     switch (kind) {
     case KIND_REVERB:
-        if (!reverb_pass && v->reverb) reverb_run(v->reverb, rate, data, v->channels, v->out_channels, n);
+        if (!reverb_pass && v->reverb) {
+            reverb_audible = reverb_run(v->reverb, rate, data, v->channels, v->out_channels, n);
+        } else {
+            reverb_audible = 0;
+            for (uint32_t c = 0; c < out_ch && !reverb_audible; ++c)
+                for (uint32_t i = 0; i < n; ++i)
+                    if (data[c][i] != 0.0f) { reverb_audible = 1; break; }
+        }
         break;
     case KIND_CUSTOM:
         if (custom_mute) { for (uint32_t c = 0; c < MAX_CH; ++c) memset(data[c], 0, n * sizeof(float)); break; }
@@ -2233,7 +2261,9 @@ static void process_bus(Voice *v, uint32_t n) {
     v->peak = peak_of(data, out_ch, n);
     uint32_t saved = v->channels;
     v->channels = out_ch;   /* ports see the bus output width */
-    send_ports(v, data, n);
+    /* AnyPS5 sets hasSamples from ProcessReverb before USER_FX/filters and only
+     * forwards the voice when the wet/dry output contained a non-zero sample. */
+    if (kind != KIND_REVERB || reverb_audible) send_ports(v, data, n);
     v->channels = saved;
 }
 
