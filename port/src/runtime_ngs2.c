@@ -1,7 +1,7 @@
 /* libSceNgs2 reimplemented from scratch: the software mixer Sony's "sndx" middleware drives.
  *
  * Written against the API surface traced from the console module in The Last Guardian and
- * Gravity Rush 2 (docs/NGS2_LEVANTAMENTO.md): ten functions, five rack types, and the
+ * Gravity Rush 2 (docs/NGS2_LEVANTAMENTO.md): eleven functions, five rack types, and the
  * VoiceControl parameter blocks those games send. Nothing here is specific to one game; the
  * selection between this mixer and the firmware module is TLG_NGS2 (native = the console's
  * libSceNgs2.sprx linked as a module; anything else = this file).
@@ -53,6 +53,8 @@
 #define NGS2_ERR_ARG ((int32_t)0x804A0201)
 #define NGS2_ERR_MEMORY ((int32_t)0x804A0050)
 #define NGS2_ERR_VOICE_ACCESS ((int32_t)0x804A8351)
+#define NGS2_ERR_INVALID_SAMPLE_RATE ((int32_t)0x804A8051)
+#define NGS2_ERR_SYSTEM_HANDLE ((int32_t)0x804A8201)
 
 #define MAGIC_SYSTEM UINT32_C(0x4e325359)
 #define MAGIC_RACK UINT32_C(0x4e325241)
@@ -74,6 +76,12 @@ enum { RACK_SAMPLER = 0x1000, RACK_SUBMIXER = 0x2000, RACK_REVERB = 0x2001, RACK
 enum { KIND_SAMPLER, KIND_SUBMIXER, KIND_REVERB, KIND_MASTERING, KIND_CUSTOM };
 enum { EV_PLAY, EV_RELEASE, EV_STOP, EV_KILL, EV_PAUSE, EV_RESUME };
 enum { ST_FREE, ST_READY, ST_PLAYING };
+enum {
+    OUTPUT_TRANSITION_NONE,
+    OUTPUT_TRANSITION_PAUSE,
+    OUTPUT_TRANSITION_RESUME,
+    OUTPUT_TRANSITION_STOP
+};
 #define FLAG_INUSE 0x1u
 #define FLAG_PLAYING 0x2u
 #define FLAG_PAUSED 0x4u
@@ -149,6 +157,7 @@ typedef struct {
  * per output channel and decorrelated by 4 allpasses, room HF low-pass, wet/dry. */
 #define REVERB_COMBS 16
 #define REVERB_ALLPASS 4
+#define REVERB_MAX_RATE 192000u
 typedef struct {
     float *line; uint32_t length, capacity, index;
     float gain, lp_in, lp_state, damp_a, damp_b, shelf_a, shelf_b;
@@ -157,6 +166,7 @@ typedef struct {
 typedef struct { float *line; uint32_t length, index; } Allpass;
 typedef struct {
     int dirty, reset, unsupported_rate;
+    uint32_t sample_rate;
     float wet, dry, room, room_hf, decay_time, decay_hf_ratio, reflections, reflections_delay,
           reverb, reverb_delay, diffusion, density, hf_reference;
     uint32_t pattern;
@@ -229,6 +239,7 @@ struct Voice {
     uint32_t index;
     uint32_t state;
     int paused;
+    uint32_t output_transition;
     uint32_t channels;
     Port ports[MAX_PORTS];
     Matrix *matrices;
@@ -732,13 +743,18 @@ static Reverb *reverb_new(uint32_t rate) {
     Reverb *r = calloc(1, sizeof(*r));
     if (!r) return NULL;
     r->er_length = 14400; /* AnyPS5's fixed tap ring: 300 ms at 48 kHz. */
+    r->sample_rate = rate;
     size_t floats = r->er_length + (3 + REVERB_COMBS + MAX_CH + 2) * MAX_GRAIN;
-    uint32_t comb_max = (uint32_t)((float)rate * 43.05f / 1000.0f) + 8;
+    /* SystemSetSampleRate may increase the rate after this voice is set up. Keep enough
+     * backing storage for every sample rate accepted by AnyPS5; logical delay lengths remain
+     * rate-specific and are updated by reverb_run(). */
+    uint32_t comb_max = (uint32_t)((float)REVERB_MAX_RATE * 43.05f / 1000.0f) + 8;
     floats += (size_t)comb_max * REVERB_COMBS;
     uint32_t ap_len[REVERB_ALLPASS], ap_capacity[REVERB_ALLPASS];
     for (int i = 0; i < REVERB_ALLPASS; ++i) {
         ap_len[i] = (uint32_t)((float)rate * allpass_ms[i] * 0.001f + 0.5f);
-        ap_capacity[i] = ap_len[i] ? ap_len[i] : 1;
+        ap_capacity[i] = (uint32_t)((float)REVERB_MAX_RATE * allpass_ms[i] * 0.001f + 0.5f);
+        if (!ap_capacity[i]) ap_capacity[i] = 1;
         floats += (size_t)ap_capacity[i] * MAX_CH;
     }
     float *mem = calloc(floats, sizeof(float));
@@ -918,6 +934,20 @@ static void reverb_set_i3dl2(Reverb *r, const ParamHeader *p, float (*f)(const P
 }
 static int reverb_run(Reverb *r, uint32_t rate, float data[MAX_CH][MAX_GRAIN], uint32_t in_channels,
                       uint32_t out_channels, uint32_t n) {
+    if (r->sample_rate != rate) {
+        r->sample_rate = rate;
+        r->unsupported_rate = 0;
+        for (int c = 0; c < MAX_CH; ++c) {
+            for (int a = 0; a < REVERB_ALLPASS; ++a) {
+                int len = (int)((float)rate * allpass_ms[a] * 0.001f + 0.5f) + allpass_offset[c][a];
+                if (len < 1) { r->unsupported_rate = 1; len = 1; }
+                r->ap[c][a].length = (uint32_t)len;
+                r->ap[c][a].index = 0;
+            }
+        }
+        r->dirty = 1;
+        r->reset = 1;
+    }
     if (r->unsupported_rate) return -1;
     const int reset = r->reset;
     if (reset) reverb_reset_state(r);
@@ -1262,6 +1292,16 @@ static void guest_free(const Allocator *a, BufferInfo *info) {
 
 #define CONTEXT_BUFFER_SIZE 0x1000
 
+static int ngs2_valid_sample_rate(uint32_t rate) {
+    switch (rate) {
+    case 11025: case 12000: case 22050: case 24000: case 44100:
+    case 48000: case 88200: case 96000: case 176400: case 192000:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 /* ---- Exports: system ---- */
 static ABI int32_t ngs2_system_create(const uint8_t *option, const Allocator *allocator, uintptr_t *out) {
     if (!out) return NGS2_ERR_ARG;
@@ -1275,6 +1315,10 @@ static ABI int32_t ngs2_system_create(const uint8_t *option, const Allocator *al
         memcpy(&v, option + 0x20, 4); if (v) s->grain = v;
         memcpy(&v, option + 0x24, 4); if (v) s->rate = v;
     }
+    if (!ngs2_valid_sample_rate(s->rate)) {
+        free(s);
+        return NGS2_ERR_INVALID_SAMPLE_RATE;
+    }
     if (s->grain > MAX_GRAIN) s->grain = MAX_GRAIN;
     if (allocator) { s->allocator = *allocator; guest_alloc(allocator, &s->buffer, CONTEXT_BUFFER_SIZE); s->allocated = 1; }
     pthread_mutex_lock(&lock);
@@ -1287,6 +1331,36 @@ static ABI int32_t ngs2_system_create(const uint8_t *option, const Allocator *al
         if (path && *path && (wav = fopen(path, "wb"))) { static const char zero[44]; fwrite(zero, 1, 44, wav); }
     }
     *out = (uintptr_t)s;
+    return NGS2_OK;
+}
+
+static ABI int32_t ngs2_system_set_sample_rate(uintptr_t handle, uint32_t rate) {
+    pthread_mutex_lock(&lock);
+    System *s = as_system(handle);
+    if (!s) { pthread_mutex_unlock(&lock); return NGS2_ERR_SYSTEM_HANDLE; }
+    if (!ngs2_valid_sample_rate(rate)) {
+        pthread_mutex_unlock(&lock);
+        return NGS2_ERR_INVALID_SAMPLE_RATE;
+    }
+    if (s->rate != rate) {
+        s->rate = rate;
+        for (Rack *r = s->racks; r; r = r->next) {
+            for (uint32_t i = 0; i < r->max_voices; ++i) {
+                Voice *v = r->voices[i];
+                for (int f = 0; f < MAX_FILTERS; ++f) if (v->filters[f].used) v->filters[f].dirty = 1;
+                v->compressor.dirty = 1;
+                v->limiter.dirty = 1;
+                if (v->lfe_enabled) lfe_design(v, rate);
+                if (v->reverb) {
+                    /* reverb_run() recalculates allpass lengths at the next grain, resets
+                     * histories and re-designs comb/Room-HF coefficients for the new rate. */
+                    v->reverb->dirty = 1;
+                    v->reverb->reset = 1;
+                }
+            }
+        }
+    }
+    pthread_mutex_unlock(&lock);
     return NGS2_OK;
 }
 
@@ -1427,6 +1501,9 @@ static void voice_finish(Voice *v) {
     if (v->state == ST_PLAYING) ++stat_finished;
     v->state = ST_FREE;
     v->paused = 0;
+    v->output_transition = OUTPUT_TRANSITION_NONE;
+    v->user_fx_transition_flags = 0;
+    v->user_fx_stop_transition = 0;
     v->stop_transition = 0;
     if (v->sampler) {
         sampler_clear_blocks(v->sampler);
@@ -1457,6 +1534,7 @@ static void voice_event(Voice *v, uint32_t event) {
         if (v->state != ST_PLAYING) {
             v->state = ST_PLAYING;
             v->paused = 0;
+            v->output_transition = OUTPUT_TRANSITION_NONE;
             v->user_fx_stop_transition = 0;
             v->user_fx_transition_flags = 0;
             if (v->user_fx) v->user_fx_flags |= 3u;
@@ -1486,32 +1564,50 @@ static void voice_event(Voice *v, uint32_t event) {
              * but deliberately leaves the delay lines intact for a subsequent PLAY. */
             if (v->state == ST_PLAYING || v->paused) {
                 v->paused = 0;
+                v->state = ST_READY;
                 v->stopped = 1;
                 v->stop_transition = 1;
             }
             break;
         }
         if (v->sampler) voice_stop(v);
-        else if (v->rack->kind == KIND_SUBMIXER && (v->state == ST_PLAYING || v->paused)) {
-            /* AnyPS5 renders one final mixer grain and marks legacy USER_FX with STOP. */
-            v->state = ST_READY;
-            v->user_fx_stop_transition = 1;
-            v->user_fx_transition_flags |= 8u;
-            v->stopped = 0;
+        else if (v->rack->kind == KIND_SUBMIXER) {
+            if (v->state == ST_PLAYING || v->paused) {
+                /* AnyPS5 renders one final mixer grain, fades it over 64 samples and marks legacy USER_FX STOP. */
+                v->state = ST_READY;
+                v->paused = 0;
+                v->output_transition = OUTPUT_TRANSITION_STOP;
+                v->user_fx_stop_transition = 1;
+                v->user_fx_transition_flags |= 8u;
+                v->stopped = 0;
+            }
+            /* STOP on an already stopped or empty mixer is a no-op; do not cancel a queued final grain. */
         } else { voice_finish(v); v->state = ST_READY; v->stopped = 1; } /* buses stay set up */
         break;
     case EV_KILL:
         if (v->reverb) {
-            /* PS4 KILL has the same reverb-clear effect as AnyPS5 STOP_IMM/KILL. */
+            /* KILL clears DSP state but retains INUSE for a voice that was already used. */
+            const int was_in_use = v->state != ST_FREE;
             v->reverb->reset = 1;
             v->stop_transition = 0;
             voice_finish(v);
+            if (was_in_use) v->state = ST_READY;
             v->stopped = 1;
         } else if (v->sampler) voice_stop(v);
         else { voice_finish(v); v->state = ST_READY; v->stopped = 1; }
         break;
-    case EV_PAUSE: if (v->state == ST_PLAYING) v->paused = 1; break;
-    case EV_RESUME: v->paused = 0; break;
+    case EV_PAUSE:
+        if (v->state == ST_PLAYING && !v->paused) {
+            v->paused = 1;
+            if (v->rack->kind == KIND_SUBMIXER) v->output_transition = OUTPUT_TRANSITION_PAUSE;
+        }
+        break;
+    case EV_RESUME:
+        if (v->state == ST_PLAYING && v->paused) {
+            v->paused = 0;
+            if (v->rack->kind == KIND_SUBMIXER) v->output_transition = OUTPUT_TRANSITION_RESUME;
+        }
+        break;
     default: note("unknown event %u", event); break;
     }
 }
@@ -1837,6 +1933,7 @@ static ABI int32_t ngs2_voice_control(uintptr_t handle, const ParamHeader *param
 }
 
 static uint32_t voice_flags(const Voice *v) {
+    if (v->reverb && v->stop_transition) return FLAG_INUSE;
     switch (v->state) {
     case ST_READY: return FLAG_INUSE;
     case ST_PLAYING: {
@@ -2182,6 +2279,10 @@ static int32_t call_user_fx(Voice *v, float data[MAX_CH][MAX_GRAIN], uint32_t nu
     float *channels[MAX_CH];
     for (int c = 0; c < MAX_CH; ++c) channels[c] = data[c];
     uint32_t flags = v->user_fx_flags | v->user_fx_transition_flags;
+    /* AnyPS5 derives STOP/PAUSE callback flags from the voice transition. PAUSE is reported
+     * only after its one-grain fade; STOP is visible during the final mixer grain. */
+    if (v->output_transition == OUTPUT_TRANSITION_STOP) flags |= 8u;
+    else if (v->paused && v->output_transition != OUTPUT_TRANSITION_PAUSE) flags |= 4u;
     UserFxContext context = {channels, v->user_fx_data[0], v->user_fx_data[1], v->user_fx_data[2], flags,
                              num_channels, n, v->rack->system->rate};
     UserFxHandler handler = v->user_fx;
@@ -2200,6 +2301,31 @@ static int32_t call_user_fx(Voice *v, float data[MAX_CH][MAX_GRAIN], uint32_t nu
     v->user_fx_transition_flags = 0;
     return NGS2_OK;
 }
+static int32_t apply_voice_output_transition(Voice *v, float data[MAX_CH][MAX_GRAIN],
+                                                  uint32_t channels, uint32_t n) {
+    if (v->rack->kind != KIND_SUBMIXER) return NGS2_OK;
+    const uint32_t transition = v->output_transition;
+    if (transition == OUTPUT_TRANSITION_NONE && !v->paused) return NGS2_OK;
+    if (transition != OUTPUT_TRANSITION_NONE && n < 64) return NGS2_ERR_ARG;
+    for (uint32_t c = 0; c < channels; ++c) {
+        for (uint32_t i = 0; i < n; ++i) {
+            float gain = 1.0f;
+            if (transition == OUTPUT_TRANSITION_PAUSE) {
+                if (i >= n - 64) gain = (float)(n - i) / 64.0f;
+            } else if (transition == OUTPUT_TRANSITION_RESUME) {
+                if (i < 64) gain = (float)i / 64.0f;
+            } else if (transition == OUTPUT_TRANSITION_STOP) {
+                gain = i < 64 ? 1.0f - (float)i / 64.0f : 0.0f;
+            } else if (v->paused) {
+                gain = 0.0f;
+            }
+            data[c][i] *= gain;
+        }
+    }
+    v->output_transition = OUTPUT_TRANSITION_NONE;
+    return NGS2_OK;
+}
+
 static int has_nonzero_samples(float data[MAX_CH][MAX_GRAIN], uint32_t channels, uint32_t n) {
     for (uint32_t c = 0; c < channels; ++c)
         for (uint32_t k = 0; k < n; ++k)
@@ -2238,6 +2364,7 @@ static void process_bus(Voice *v, uint32_t n) {
     if (v->stop_transition) {
         v->stop_transition = 0;
         voice_finish(v);
+        v->state = ST_READY; /* AnyPS5 keeps INUSE set after a normal Reverb STOP. */
         v->stopped = 1;
         v->peak = 0.0f;
         return;
@@ -2292,6 +2419,10 @@ static void process_bus(Voice *v, uint32_t n) {
         dynamics_run(&v->compressor, rate, data, v->channels, n);
         if (call_user_fx(v, data, v->channels, n) != NGS2_OK) return;
         filters_run(v, 1, data, data, v->channels, n);
+        if (apply_voice_output_transition(v, data, v->channels, n) != NGS2_OK) {
+            v->rack->system->render_error = NGS2_ERR_ARG;
+            return;
+        }
         break;
     }
     v->peak = peak_of(data, out_ch, n);
@@ -2302,6 +2433,7 @@ static void process_bus(Voice *v, uint32_t n) {
     v->channels = saved;
     if (finish_after_user_fx_stop) {
         v->user_fx_stop_transition = 0;
+        v->user_fx_transition_flags = 0;
         voice_finish(v);
         v->state = ST_READY;
         v->stopped = 1;
@@ -2452,6 +2584,7 @@ static ABI int32_t ngs2_render(uintptr_t handle, const RenderBuffer *buffers, ui
 
 static const RuntimeExport exports[] = {
     {"sceNgs2SystemCreateWithAllocator", ngs2_system_create}, {"sceNgs2SystemDestroy", ngs2_system_destroy},
+    {"sceNgs2SystemSetSampleRate", ngs2_system_set_sample_rate},
     {"sceNgs2SystemRender", ngs2_render}, {"sceNgs2RackQueryBufferSize", ngs2_query_buffer},
     {"sceNgs2RackCreate", ngs2_rack_create}, {"sceNgs2RackCreateWithAllocator", ngs2_rack_create_alloc},
     {"sceNgs2RackDestroy", ngs2_rack_destroy}, {"sceNgs2RackGetVoiceHandle", ngs2_voice_handle},
@@ -2469,7 +2602,7 @@ uintptr_t runtime_ngs2_resolve(const char *name) {
     if (runtime_ngs2_native()) return 0;
     return RUNTIME_LOOKUP(exports, name);
 }
-/* Direct access by symbol name for the offline tests (tests/test_ngs2.c). */
+/* Direct access by symbol name for internal runtime diagnostics. */
 void *runtime_ngs2_function(const char *symbol) {
     for (size_t i = 0; i < sizeof(exports) / sizeof(*exports); ++i)
         if (!strcmp(exports[i].name, symbol)) return exports[i].function;
