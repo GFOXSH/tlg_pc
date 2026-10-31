@@ -497,8 +497,7 @@ static float mb_to_gain(float mb) { return mb < -10000.0f ? 0.0f : powf(10.0f, m
 static void biquad_design(Biquad *f, uint32_t rate) {
     float *c = f->c;
     f->dirty = 0;
-    if (f->type == 0x20) { memcpy(c, f->direct, sizeof(f->direct)); return; }    if (f->type < 1 || f->type > 10) { c[0] = 1.0f; c[1] = c[2] = c[3] = c[4] = 0.0f; return; }    float x = f->fc / (float)rate;    float w = x < 0.001f ? 0.0062831853f : fminf(x, 0.49987f) * 6.2831855f;    float q = f->q < 0.0001f ? 0.0001f : fminf(f->q, 32.0f);    float s = sinf(w), cs = cosf(w);    float b0, b1, b2, a0, a1, a2;    switch (f->type) {    case 6: case 7: {   /* low / high shelf, level = linear gain */        float A = sqrtf(fmaxf(f->level, 0.0001f)), beta = sqrtf(A) / q * s;        if (f->type == 6) {            b0 = A * ((A + 1) - (A - 1) * cs + beta); b1 = 2 * A * ((A - 1) - (A + 1) * cs); b2 = A * ((A + 1) - (A - 1) * cs - beta);
-            a0 = (A + 1) + (A - 1) * cs + beta; a1 = -2 * ((A - 1) + (A + 1) * cs); a2 = (A + 1) + (A - 1) * cs - beta;
+    if (f->type == 0x20) { memcpy(c, f->direct, sizeof(f->direct)); return; }    if (f->type < 1 || f->type > 10) { c[0] = 1.0f; c[1] = c[2] = c[3] = c[4] = 0.0f; return; }    float x = f->fc / (float)rate;    float w = x < 0.001f ? 0.0062831853f : fminf(x, 0.49987f) * 6.2831855f;    float q = f->q < 0.0001f ? 0.0001f : fminf(f->q, 32.0f);    float s = sinf(w), cs = cosf(w);    float b0, b1, b2, a0, a1, a2;    switch (f->type) {    case 6: case 7: {   /* low / high shelf, level = linear gain */        float A = sqrtf(fmaxf(f->level, 0.0001f)), beta = sqrtf(A) / q * s;        if (f->type == 6) {            b0 = A * ((A + 1) - (A - 1) * cs + beta); b1 = 2 * A * ((A - 1) - (A + 1) * cs); b2 = A * ((A + 1) - (A - 1) * cs - beta);            a0 = (A + 1) + (A - 1) * cs + beta; a1 = -2 * ((A - 1) + (A + 1) * cs); a2 = (A + 1) + (A - 1) * cs - beta;
         } else {
             b0 = A * ((A + 1) + (A - 1) * cs + beta); b1 = -2 * A * ((A - 1) + (A + 1) * cs); b2 = A * ((A + 1) + (A - 1) * cs - beta);
             a0 = (A + 1) - (A - 1) * cs + beta; a1 = 2 * ((A - 1) - (A + 1) * cs); a2 = (A + 1) - (A - 1) * cs - beta;
@@ -997,8 +996,7 @@ static void reverb_run(Reverb *r, uint32_t rate, float data[MAX_CH][MAX_GRAIN], 
 static void chorus_run(Chorus *ch, uint32_t rate, float data[MAX_CH][MAX_GRAIN], uint32_t channels, uint32_t n) {    if (!ch->line) return;    uint32_t phases = ch->phases < 1 ? 1 : ch->phases > 4 ? 4 : ch->phases;    float base = (float)(int)(ch->delay_ms * 0.001f * (float)rate);    float depth = base * ch->depth, step = ch->rate_hz / (float)rate;    float dry = ch->gain * ch->dry, wet = ch->gain * ch->wet;    float phase0 = ch->phase;    uint32_t write0 = ch->write;
     for (uint32_t c = 0; c < channels; ++c) {        if (ch->mask >> c & 1) continue;
         float phase = phase0;        uint32_t w = write0;        float *lines = ch->line + (size_t)c * 4 * CHORUS_LINE;
-        for (uint32_t i = 0; i < n; ++i) {
-            float x = data[c][i], in = x, v = 0.0f;
+        for (uint32_t i = 0; i < n; ++i) {            float x = data[c][i], in = x, v = 0.0f;
             for (uint32_t k = 0; k < phases; ++k) {
                 float ph = phase + (float)k / (float)phases;
                 ph -= floorf(ph);
@@ -1203,8 +1201,9 @@ static int32_t guest_alloc(const Allocator *a, BufferInfo *info, uint64_t size) 
     }
     return NGS2_OK;
 }
-static void guest_free(const Allocator *a, BufferInfo *info) {
-    if (a && a->free && info->host_buffer) a->free(info);
+static int32_t guest_free(const Allocator *a, BufferInfo *info) {
+    if (a && a->free && info->host_buffer) return a->free(info);
+    return NGS2_OK;
 }
 
 #define CONTEXT_BUFFER_SIZE 0x1000
@@ -1283,11 +1282,11 @@ static ABI int32_t ngs2_system_destroy(uintptr_t handle, BufferInfo *out) {
     for (System **p = &systems; *p; p = &(*p)->next) if (*p == s) { *p = s->next; break; }
     while (s->racks) { Rack *r = s->racks; s->racks = r->next; rack_release(r); r->magic = 0; free(r); }
     if (out) *out = s->buffer;
-    if (s->allocated) guest_free(&s->allocator, &s->buffer);
+    int32_t free_result = s->allocated ? guest_free(&s->allocator, &s->buffer) : NGS2_OK;
     s->magic = 0;
     free(s);
     pthread_mutex_unlock(&lock);
-    return NGS2_OK;
+    return free_result;
 }
 
 /* ---- Exports: racks ---- */
@@ -1431,12 +1430,12 @@ static ABI int32_t ngs2_rack_destroy(uintptr_t handle, BufferInfo *out) {
     for (Rack **p = &s->racks; *p; p = &(*p)->next) if (*p == r) { *p = r->next; break; }
     unpatch_all(s, r);
     if (out) *out = r->buffer;
-    if (r->allocated) guest_free(&r->allocator, &r->buffer);
+    int32_t free_result = r->allocated ? guest_free(&r->allocator, &r->buffer) : NGS2_OK;
     rack_release(r);
     r->magic = 0;
     free(r);
     pthread_mutex_unlock(&lock);
-    return NGS2_OK;
+    return free_result;
 }
 static ABI int32_t ngs2_voice_handle(uintptr_t rack, uint32_t index, uintptr_t *out) {
     Rack *r = as_rack(rack);
@@ -1497,8 +1496,7 @@ static void voice_event(Voice *v, uint32_t event) {
             v->paused = 0;
             if (v->sampler) {                envelope_start(v->sampler);
                 v->sampler->fade_in = 1;
-                v->sampler->stopping = 0;
-                for (int p = 0; p < MAX_PORTS; ++p) v->ports[p].primed = 0;
+                v->sampler->stopping = 0;                for (int p = 0; p < MAX_PORTS; ++p) v->ports[p].primed = 0;
                 ++stat_plays;
             }
         }
@@ -1997,8 +1995,7 @@ static int decode_unit(Voice *v) {
             if (n > UNIT_FRAMES) n = UNIT_FRAMES;            for (uint32_t i = 0; i < n; ++i)
                 for (uint32_t c = 0; c < MAX_CH; ++c)
                     frames[i * MAX_CH + c] = c < ch ? pcm_sample(s->wave, b->data + s->byte + i * frame + c * bytes) : 0.0f;
-            produced = n; used = n * frame;
-        }
+            produced = n; used = n * frame;        }
     }
     if (!produced) { block_end(v); return 1; }   /* data exhausted before the sample count */
     s->byte += used;
