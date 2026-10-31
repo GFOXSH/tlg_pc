@@ -55,11 +55,13 @@
 #define NGS2_ERR_RACK_ID ((int32_t)0x804A0260)
 #define NGS2_ERR_RACK_HANDLE ((int32_t)0x804A0261)
 #define NGS2_ERR_VOICE_HANDLE ((int32_t)0x804A0300)
+#define NGS2_ERR_VOICE_INDEX ((int32_t)0x804A0302)
 #define NGS2_ERR_VOICE_CONTROL_ID ((int32_t)0x804A0308)
 #define NGS2_ERR_VOICE_CONTROL_ADDRESS ((int32_t)0x804A0309)
 #define NGS2_ERR_VOICE_CONTROL_SIZE ((int32_t)0x804A030a)
 #define NGS2_ERR_VOICE_CONTROL_CIRCULAR ((int32_t)0x804A030b)
 #define NGS2_ERR_MAX_GRAIN_SAMPLES ((int32_t)0x804A0050)
+#define NGS2_ERR_NUM_CHANNELS ((int32_t)0x804A0052)
 #define NGS2_ERR_NUM_GRAIN_SAMPLES ((int32_t)0x804A0051)
 #define NGS2_ERR_SAMPLE_RATE ((int32_t)0x804A0201)
 #define NGS2_ERR_OPTION_SIZE ((int32_t)0x804A0081)
@@ -497,8 +499,7 @@ static void biquad_design(Biquad *f, uint32_t rate) {
     if (f->type == 0x20) { memcpy(c, f->direct, sizeof(f->direct)); return; }
     if (f->type < 1 || f->type > 10) { c[0] = 1.0f; c[1] = c[2] = c[3] = c[4] = 0.0f; return; }
     float x = f->fc / (float)rate;
-    float w = x < 0.001f ? 0.0062831853f : fminf(x, 0.49987f) * 6.2831855f;    float q = f->q < 0.0001f ? 0.0001f : fminf(f->q, 32.0f);
-    float s = sinf(w), cs = cosf(w);
+    float w = x < 0.001f ? 0.0062831853f : fminf(x, 0.49987f) * 6.2831855f;    float q = f->q < 0.0001f ? 0.0001f : fminf(f->q, 32.0f);    float s = sinf(w), cs = cosf(w);
     float b0, b1, b2, a0, a1, a2;    switch (f->type) {    case 6: case 7: {   /* low / high shelf, level = linear gain */        float A = sqrtf(fmaxf(f->level, 0.0001f)), beta = sqrtf(A) / q * s;        if (f->type == 6) {            b0 = A * ((A + 1) - (A - 1) * cs + beta); b1 = 2 * A * ((A - 1) - (A + 1) * cs); b2 = A * ((A + 1) - (A - 1) * cs - beta);
             a0 = (A + 1) + (A - 1) * cs + beta; a1 = -2 * ((A - 1) + (A + 1) * cs); a2 = (A + 1) + (A - 1) * cs - beta;
         } else {
@@ -997,8 +998,7 @@ static void reverb_run(Reverb *r, uint32_t rate, float data[MAX_CH][MAX_GRAIN], 
     r->primed = 1;}
 /* ---- Chorus and delay (custom rack modules) ---- */
 static void chorus_run(Chorus *ch, uint32_t rate, float data[MAX_CH][MAX_GRAIN], uint32_t channels, uint32_t n) {    if (!ch->line) return;    uint32_t phases = ch->phases < 1 ? 1 : ch->phases > 4 ? 4 : ch->phases;    float base = (float)(int)(ch->delay_ms * 0.001f * (float)rate);
-    float depth = base * ch->depth, step = ch->rate_hz / (float)rate;    float dry = ch->gain * ch->dry, wet = ch->gain * ch->wet;
-    float phase0 = ch->phase;
+    float depth = base * ch->depth, step = ch->rate_hz / (float)rate;    float dry = ch->gain * ch->dry, wet = ch->gain * ch->wet;    float phase0 = ch->phase;
     uint32_t write0 = ch->write;
     for (uint32_t c = 0; c < channels; ++c) {
         if (ch->mask >> c & 1) continue;
@@ -1325,8 +1325,12 @@ static ABI int32_t ngs2_query_buffer(uint32_t rack_id, const void *option, Buffe
     case RACK_SUBMIXER:  out->host_size = 0x2000; break;
     case RACK_MASTERING: out->host_size = 0x1800; break;
     case RACK_REVERB: {
-        uint32_t reverb_size = 1;
-        if (option) memcpy(&reverb_size, (const uint8_t *)option + 0x34, sizeof(reverb_size));
+        uint32_t max_channels = 8, reverb_size = 1;
+        if (option) {
+            memcpy(&max_channels, (const uint8_t *)option + 0x30, sizeof(max_channels));
+            memcpy(&reverb_size, (const uint8_t *)option + 0x34, sizeof(reverb_size));
+        }
+        if (!max_channels || max_channels > MAX_CH) return NGS2_ERR_NUM_CHANNELS;
         if (reverb_size != 1) return NGS2_ERR_REVERB_SIZE;
         out->host_size = 0x3e180;
         break;
@@ -1423,7 +1427,7 @@ static ABI int32_t ngs2_voice_handle(uintptr_t rack, uint32_t index, uintptr_t *
     Rack *r = as_rack(rack);
     if (!r) return NGS2_ERR_RACK_HANDLE;
     if (!out) return NGS2_ERR_BUFFER_ADDRESS;
-    if (index >= r->max_voices) return (int32_t)0x804A0302;
+    if (index >= r->max_voices) return NGS2_ERR_VOICE_INDEX;
     *out = voice_handle(r->voices[index]);
     return NGS2_OK;
 }
@@ -1497,8 +1501,7 @@ static void voice_event(Voice *v, uint32_t event) {
             s->env_start = s->env_level;        } else voice_stop(v);
         break;
     case EV_STOP:
-    case EV_KILL:
-        if (v->sampler) voice_stop(v);
+    case EV_KILL:        if (v->sampler) voice_stop(v);
         else { voice_finish(v); v->state = ST_READY; v->stopped = 1; } /* buses stay set up */
         break;
     case EV_PAUSE: if (v->state == ST_PLAYING) v->paused = 1; break;
@@ -1997,8 +2000,7 @@ static int decode_unit(Voice *v) {
 }
 
 /* Makes frame `need` available (or marks the source done). */
-static void fifo_fill(Voice *v, uint32_t need) {
-    Sampler *s = v->sampler;
+static void fifo_fill(Voice *v, uint32_t need) {    Sampler *s = v->sampler;
     while (s->fifo_len <= need && !s->source_done) {
         if (s->fifo_len + UNIT_FRAMES > FIFO_FRAMES) {
             /* Keep one frame of history before the read position. */
