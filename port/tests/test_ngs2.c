@@ -771,6 +771,52 @@ static void test_perf(void) {
     system_destroy(g.system, NULL);
 }
 
+
+static ABI int32_t fail_guest_allocator(BufferInfo *info) {
+    (void)info;
+    return (int32_t)-12345;
+}
+static void test_ps4_api_validation(void) {
+    Graph g = graph_new(1);
+    BufferInfo info;
+    CHECK(query_buffer(0x1000, NULL, &info) == 0 && info.host_size == 0x1000, "sampler rack size");
+    uint64_t sampler_size = info.host_size;
+    CHECK(query_buffer(0x2000, NULL, &info) == 0 && info.host_size == 0x2000, "submixer rack size");
+    CHECK(info.host_size != sampler_size, "rack query is type-specific");
+    CHECK(query_buffer(0x3000, NULL, &info) == 0 && info.host_size == 0x1800, "mastering rack size");
+    CHECK(query_buffer(0x2001, NULL, &info) == 0 && info.host_size == 0x3e180, "full-rate reverb size");
+    uint8_t rev_option[0x60] = {0};
+    uint32_t unsupported_reverb_size = 1;
+    memcpy(rev_option + 0x10, &unsupported_reverb_size, sizeof(unsupported_reverb_size));
+    CHECK(query_buffer(0x2001, rev_option, &info) == (int32_t)0x804A0900, "unsupported reverb size code");
+    CHECK(query_buffer(0x7777, NULL, &info) == (int32_t)0x804A0260, "invalid rack id code");
+
+    uintptr_t voice = 0;
+    CHECK(voice_handle(g.sampler, 1, &voice) == 0, "voice for validation tests");
+    uint8_t malformed[24] __attribute__((aligned(8))) = {0};
+    uint16_t bad_size = 4;
+    memcpy(malformed, &bad_size, sizeof(bad_size));
+    CHECK(voice_control(voice, malformed) == (int32_t)0x804A030A, "short VoiceControl header code");
+    uint16_t header_size = 8;
+    int16_t next = 8;
+    memcpy(malformed, &header_size, sizeof(header_size));
+    memcpy(malformed + 2, &next, sizeof(next));
+    memcpy(malformed + 8, &header_size, sizeof(header_size));
+    next = -8;
+    memcpy(malformed + 10, &next, sizeof(next));
+    CHECK(voice_control(voice, malformed) == (int32_t)0x804A030B, "VoiceControl cycle code");
+    CHECK(voice_control(voice, (const uint8_t *)malformed + 1) == (int32_t)0x804A0309, "unaligned VoiceControl address code");
+
+    uint8_t state[0x30];
+    CHECK(voice_state(voice, state, 0x20) == (int32_t)0x804A0A06, "VoiceGetState size code");
+    CHECK(voice_state(voice, state, sizeof(state)) == 0, "VoiceGetState documented size");
+
+    struct { int32_t (*alloc)(BufferInfo *); int32_t (*free)(BufferInfo *); uintptr_t user_data; } allocator = {fail_guest_allocator, NULL, 0};
+    uintptr_t failed_system = 0;
+    CHECK(system_create(NULL, &allocator, &failed_system) == -12345, "guest allocator error is propagated");
+    system_destroy(g.system, NULL);
+}
+
 int main(void) {
 #define BIND(var, name) var = (__typeof__(var))runtime_ngs2_function(name); if (!var) { printf("missing %s\n", name); return 1; }
     BIND(system_create, "sceNgs2SystemCreateWithAllocator");
@@ -796,6 +842,7 @@ int main(void) {
     test_custom();
     test_envelope_curves();
     test_perf();
+    test_ps4_api_validation();
     printf(failures ? "ngs2-test: %d failures\n" : "ngs2-test: all passed\n", failures);
     return failures != 0;
 }
