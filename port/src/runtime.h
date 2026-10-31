@@ -62,7 +62,7 @@ typedef struct { const char *name; void *function; } RuntimeExport;
 #define RUNTIME_LOOKUP(table, nid) runtime_lookup(table, sizeof(table)/sizeof(*(table)), nid)
 const char *runtime_symbol(const char *nid);
 uintptr_t runtime_ngs2_trace_bind(const char *nid, uintptr_t address);
-/* libSceNgs2 HLE (src/ngs2/*.cpp); TLG_NGS2=native leaves resolution to the linked firmware module. */
+/* libSceNgs2 HLE sources (src/ngs2); TLG_NGS2=native leaves resolution to the linked firmware module. */
 int runtime_ngs2_native(void);
 uintptr_t runtime_ngs2_resolve(const char *name);
 uintptr_t runtime_lookup(const RuntimeExport *table, size_t count, const char *nid);
