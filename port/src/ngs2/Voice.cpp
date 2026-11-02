@@ -22,6 +22,7 @@ static constexpr std::uint8_t COMMAND_TYPE_FLOAT_ARRAY = 0x11;
 static constexpr float MAX_MATRIX_LEVEL = 4.0f;
 
 void Ngs2Voice::SetEvent(std::uint32_t eventId) {
+    const auto previousState = state;
     switch (eventId) {
         case SCE_NGS2_VOICE_EVENT_PLAY:
             if (state == Ngs2PlayState::Empty || state == Ngs2PlayState::Ready || state == Ngs2PlayState::Stopped) {
@@ -31,7 +32,6 @@ void Ngs2Voice::SetEvent(std::uint32_t eventId) {
                 envelope.position = 0;
                 envelope.start = 0.0f;
                 envelope.gain = envelope.forward.empty() ? 1.0f : 0.0f;
-                stateFlags = static_cast<std::uint32_t>(state);
                 if (userFxHandler) userFxFlags = 1;
             }
             break;
@@ -62,9 +62,13 @@ void Ngs2Voice::SetEvent(std::uint32_t eventId) {
             break;
         default: ngs2_stop("NGS2: unknown voice event " + Ngs2Hex(eventId));
     }
+    // GetState/GetStateFlags expose the last committed flags. Keep them in step
+    // with actual state transitions, while preserving render-derived bits on no-op events.
+    if (state != previousState) stateFlags = static_cast<std::uint32_t>(state);
 }
 
 void Ngs2Voice::ResetSetup() {
+    Ngs2ResetUserFx2(*this);
     ++waveformRevision;
     SetEvent(SCE_NGS2_VOICE_EVENT_STOP_IMM);
     std::fill(ports.begin(), ports.end(), Ngs2Port{});
@@ -484,6 +488,9 @@ static void SetupMixer(Ngs2Voice& voice, std::uint32_t numChannels) {
     if (numChannels == 0 || numChannels > voice.rack->maxChannels) APS5_INVALID_ARG_EX;
     voice.ResetSetup();
     voice.channels = numChannels;
+    // The PS4 implementation marks configured Submixer, Reverb and Mastering voices READY.
+    voice.state = Ngs2PlayState::Ready;
+    voice.stateFlags = static_cast<std::uint32_t>(voice.state);
 }
 
 static void ApplyParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& param) {

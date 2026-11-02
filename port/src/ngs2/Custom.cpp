@@ -101,16 +101,28 @@ void Ngs2SetupUserFx(Ngs2Rack& rack, const Ngs2CustomRackOption& option) {
                 fx.work.resize(module.work_size);
                 fx.state.resize(option.module[m].state_size);
                 fx.flags = USER_FX2_FLAG_FIRST_PROCESS;
-                if (module.setup_handler == nullptr) continue;
-                auto context = UserFxContext(rack, m, i);
-                const int result = module.setup_handler(&context);
-                if (result != SCE_NGS2_OK) ngs2_stop("NGS2: the UserFx2 setup handler failed with " + std::to_string(result));
+                if (module.setup_handler != nullptr) {
+                    auto context = UserFxContext(rack, m, i);
+                    const int result = module.setup_handler(&context);
+                    if (result != SCE_NGS2_OK) ngs2_stop("NGS2: the UserFx2 setup handler failed with " + std::to_string(result));
+                }
+                // Preserve the module's post-setup parameter defaults for later voice SETUP calls.
+                fx.initialParam = fx.param;
             }
         } else if (option.module[m].module_id == SCE_NGS2_CUSTOM_MODULE_ID_USER_FX) {
             for (std::uint32_t i = 0; i < rack.voices.size(); i++) {
                 rack.voices[i].customUserFx[m].flags = 1;
             }
         }
+    }
+}
+
+void Ngs2ResetUserFx2(Ngs2Voice& voice) {
+    for (auto& fx : voice.userFx) {
+        if (fx.initialParam.size() != fx.param.size()) APS5_INVALID_ARG_EX;
+        std::copy(fx.initialParam.begin(), fx.initialParam.end(), fx.param.begin());
+        // Keep work/state (module runtime memory) intact, but make the next process call initialize.
+        fx.flags = USER_FX2_FLAG_FIRST_PROCESS;
     }
 }
 
@@ -130,11 +142,16 @@ static void SetupCustomSubmixer(Ngs2Voice& voice, const Ngs2CustomSubmixerVoiceS
     if (setup.flags != 0) ngs2_stop("NGS2: custom submixer setup flags are not implemented");
     if (setup.num_input_channels != setup.num_output_channels) ngs2_stop("NGS2: custom submixer channel conversion is not implemented");
     if (setup.num_input_channels == 0 || setup.num_input_channels > voice.rack->maxChannels) APS5_INVALID_ARG_EX;
-    // Keep the standard submixer lifecycle: configured voices are READY, not PLAYING.
-    voice.ResetSetup();
+    // Custom module setup is rack-scoped. Reset its per-voice UserFx2 parameters,
+    // but retain the custom voice's routing, filters and module work/state buffers.
+    Ngs2ResetUserFx2(voice);
     voice.channels = setup.num_input_channels;
-    voice.state = Ngs2PlayState::Ready;
-    voice.stateFlags = static_cast<std::uint32_t>(voice.state);
+    // Like the PS4 runtime, a free custom-submixer voice becomes READY; re-SETUP
+    // of a voice that is already active must not silently stop it.
+    if (voice.state == Ngs2PlayState::Empty) {
+        voice.state = Ngs2PlayState::Ready;
+        voice.stateFlags = static_cast<std::uint32_t>(voice.state);
+    }
 }
 
 static void SetUserFxParam(Ngs2Voice& voice, std::uint32_t index, const Ngs2CustomVoiceUserFx2Param& param) {

@@ -125,6 +125,8 @@ struct Ngs2Port {
 
 struct Ngs2UserFx2 {
     std::vector<std::uint8_t> param;
+    // Snapshot after the module setup handler; voice SETUP restores this default.
+    std::vector<std::uint8_t> initialParam;
     std::vector<std::uint8_t> work;
     std::vector<std::uint8_t> state;
     std::uint32_t flags = 0;
@@ -278,6 +280,7 @@ void Ngs2ConsumeAtrac9(Ngs2Voice& voice, std::uint32_t grain, std::uint32_t syst
 bool Ngs2FinishBlock(Ngs2Voice& voice);
 void Ngs2CheckCustomRack(const Ngs2CustomRackOption& option);
 void Ngs2SetupUserFx(Ngs2Rack& rack, const Ngs2CustomRackOption& option);
+void Ngs2ResetUserFx2(Ngs2Voice& voice);
 void Ngs2CleanupUserFx(Ngs2Rack& rack);
 void Ngs2ApplyCustomParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& param);
 void Ngs2ProcessUserFx(Ngs2Voice& voice, std::uint32_t grain, std::uint32_t sampleRate);
