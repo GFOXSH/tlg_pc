@@ -21,6 +21,16 @@ void Ngs2CheckCustomRack(const Ngs2CustomRackOption& option) {
             if (info.option == nullptr || info.option->size != sizeof(Ngs2CustomUserFx2ModuleOption)) APS5_INVALID_ARG_EX;
             if (info.source_buffer_id != 0 || info.dest_buffer_id != 0) APS5_INVALID_ARG_EX;
             if (reinterpret_cast<const Ngs2CustomUserFx2ModuleOption*>(info.option)->process_handler == nullptr) APS5_INVALID_ARG_EX;
+        } else if (info.module_id == NGS2_INTERNAL_CUSTOM_MODULE_ID_PS4_CHORUS) {
+            if (info.option == nullptr || info.option->size != sizeof(Ngs2CustomChorusModuleOption)) APS5_INVALID_ARG_EX;
+            if (info.source_buffer_id != 0 || info.dest_buffer_id != 0) APS5_INVALID_ARG_EX;
+            const auto& module = *reinterpret_cast<const Ngs2CustomChorusModuleOption*>(info.option);
+            if (module.max_phases > 4) APS5_INVALID_ARG_EX;
+        } else if (info.module_id == NGS2_INTERNAL_CUSTOM_MODULE_ID_PS4_DELAY) {
+            if (info.option == nullptr || info.option->size != sizeof(Ngs2CustomDelayModuleOption)) APS5_INVALID_ARG_EX;
+            if (info.source_buffer_id != 0 || info.dest_buffer_id != 0) APS5_INVALID_ARG_EX;
+            const auto& module = *reinterpret_cast<const Ngs2CustomDelayModuleOption*>(info.option);
+            if (module.max_taps > 8) APS5_INVALID_ARG_EX;
         } else if (info.module_id == SCE_NGS2_CUSTOM_MODULE_ID_FILTER) {
             if (info.option != nullptr || info.state_size != 0 || info.state_offset != 0) APS5_INVALID_ARG_EX;
             if (info.source_buffer_id != 0 || info.extra_buffer_id != 0 || info.dest_buffer_id != 0) APS5_INVALID_ARG_EX;
@@ -43,16 +53,36 @@ static Ngs2UserFx2SetupContext UserFxContext(Ngs2Rack& rack, std::size_t module,
 }
 
 void Ngs2SetupUserFx(Ngs2Rack& rack, const Ngs2CustomRackOption& option) {
+    rack.customStateSize = option.state_size;
+    rack.customNumBuffers = option.num_buffers;
+    rack.customModules.resize(option.num_modules);
+    rack.customPorts.assign(option.port, option.port + option.rack_option.max_ports);
     rack.customModuleIds.resize(option.num_modules);
     rack.userFx.resize(option.num_modules);
     rack.userFxCommon.resize(option.num_modules);
+    rack.customModuleOptions.resize(option.num_modules);
     for (auto& voice : rack.voices) {
         voice.userFx.resize(option.num_modules);
         voice.customUserFx.resize(option.num_modules);
+        voice.customModuleParams.resize(option.num_modules);
     }
     for (std::uint32_t m = 0; m < option.num_modules; m++) {
-        rack.customModuleIds[m] = option.module[m].module_id;
-        if (option.module[m].module_id == SCE_NGS2_CUSTOM_MODULE_ID_FILTER) continue;
+        const auto& info = option.module[m];
+        rack.customModuleIds[m] = info.module_id;
+        rack.customModules[m] = {info.module_id, info.source_buffer_id, info.extra_buffer_id,
+                                 info.dest_buffer_id, info.state_offset, info.state_size};
+        if (info.module_id == NGS2_INTERNAL_CUSTOM_MODULE_ID_PS4_CHORUS ||
+            info.module_id == NGS2_INTERNAL_CUSTOM_MODULE_ID_PS4_DELAY) {
+            auto& ownedOption = rack.customModuleOptions[m];
+            ownedOption.resize(info.option->size);
+            std::memcpy(ownedOption.data(), info.option, ownedOption.size());
+            const std::size_t paramSize = info.module_id == NGS2_INTERNAL_CUSTOM_MODULE_ID_PS4_CHORUS
+                                              ? sizeof(Ngs2CustomVoiceChorusParam)
+                                              : sizeof(Ngs2CustomVoiceDelayParam);
+            for (auto& voice : rack.voices) voice.customModuleParams[m].resize(paramSize);
+            continue;
+        }
+        if (info.module_id == SCE_NGS2_CUSTOM_MODULE_ID_FILTER) continue;
         if (option.module[m].module_id == SCE_NGS2_CUSTOM_MODULE_ID_USER_FX2) {
             const auto& module = *reinterpret_cast<const Ngs2CustomUserFx2ModuleOption*>(option.module[m].option);
             rack.userFx[m] = module;
@@ -118,6 +148,28 @@ static void SetCustomUserFxParam(Ngs2Voice& voice, std::uint32_t index, const Ng
 
 void Ngs2ApplyCustomParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& param) {
     const auto rackId = voice.rack->rackId;
+    const std::uint32_t moduleParamId = param.id & ~0x1fu;
+    if (moduleParamId == SCE_NGS2_PS4_CUSTOM_VOICE_PARAM_CHORUS ||
+        moduleParamId == SCE_NGS2_PS4_CUSTOM_VOICE_PARAM_DELAY) {
+        if (rackId != SCE_NGS2_RACK_ID_CUSTOM_SUBMIXER) {
+            ngs2_stop("NGS2: PS4 custom effect parameter belongs to another rack");
+        }
+        const auto index = param.id & 0x1fu;
+        const auto expectedModuleId = moduleParamId == SCE_NGS2_PS4_CUSTOM_VOICE_PARAM_CHORUS
+                                          ? NGS2_INTERNAL_CUSTOM_MODULE_ID_PS4_CHORUS
+                                          : NGS2_INTERNAL_CUSTOM_MODULE_ID_PS4_DELAY;
+        const std::size_t expectedSize = moduleParamId == SCE_NGS2_PS4_CUSTOM_VOICE_PARAM_CHORUS
+                                             ? sizeof(Ngs2CustomVoiceChorusParam)
+                                             : sizeof(Ngs2CustomVoiceDelayParam);
+        if (index >= voice.rack->customModuleIds.size() || index >= voice.customModuleParams.size() ||
+            voice.rack->customModuleIds[index] != expectedModuleId) {
+            APS5_INVALID_ARG_EX;
+        }
+        auto& storage = voice.customModuleParams[index];
+        if (param.size != expectedSize || storage.size() != expectedSize) APS5_INVALID_ARG_EX;
+        std::memcpy(storage.data(), &param, expectedSize);
+        return;
+    }
     if (param.id == SCE_NGS2_CUSTOM_SUBMIXER_VOICE_PARAM_SETUP) {
         if (rackId != SCE_NGS2_RACK_ID_CUSTOM_SUBMIXER) ngs2_stop("NGS2: voice param " + Ngs2Hex(param.id) + " belongs to another rack");
         SetupCustomSubmixer(voice, ParamAs<Ngs2CustomSubmixerVoiceSetupParam>(param));

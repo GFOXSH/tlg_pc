@@ -44,6 +44,50 @@ struct Ps4RackOption {
     std::uint32_t flags, max_grain_samples, max_voices, max_input_delay_blocks, max_matrices, max_ports, reserved[20];
 };
 static_assert(sizeof(Ps4RackOption) == 128);
+
+struct Ps4CustomModuleOption {
+    std::uint32_t size;
+};
+struct Ps4CustomRackModuleInfo {
+    const Ps4CustomModuleOption* option;
+    std::uint32_t module_id;
+    std::uint32_t source_buffer_id;
+    std::uint32_t extra_buffer_id;
+    std::uint32_t dest_buffer_id;
+    std::uint32_t state_offset;
+    std::uint32_t state_size;
+    std::uint32_t reserved;
+    std::uint32_t reserved2;
+};
+struct Ps4CustomRackPortInfo {
+    std::uint32_t source_buffer_id;
+    std::uint32_t reserved;
+};
+struct Ps4CustomRackOption {
+    Ps4RackOption rack_option;
+    std::uint32_t state_size;
+    std::uint32_t num_buffers;
+    std::uint32_t num_modules;
+    std::uint32_t reserved;
+    Ps4CustomRackModuleInfo module[SCE_NGS2_CUSTOM_MAX_MODULES];
+    Ps4CustomRackPortInfo port[SCE_NGS2_CUSTOM_MAX_PORTS];
+};
+struct Ps4CustomSubmixerRackOption {
+    Ps4CustomRackOption custom_rack_option;
+    std::uint32_t max_channels;
+    std::uint32_t max_inputs;
+};
+static_assert(sizeof(Ps4CustomRackModuleInfo) == 40);
+static_assert(sizeof(Ps4CustomRackPortInfo) == 8);
+static_assert(sizeof(Ps4CustomRackModuleInfo) == sizeof(Ngs2CustomRackModuleInfo));
+static_assert(sizeof(Ps4CustomRackPortInfo) == sizeof(Ngs2CustomRackPortInfo));
+static_assert(sizeof(Ps4CustomRackOption) == 0x4d0);
+static_assert(sizeof(Ps4CustomSubmixerRackOption) == 0x4d8);
+static_assert(offsetof(Ps4CustomSubmixerRackOption, max_channels) == 0x4d0);
+static_assert(offsetof(Ngs2CustomSubmixerRackOption, max_channels) == 0x500);
+static_assert(sizeof(Ps4CustomSubmixerRackOption) - sizeof(Ps4RackOption) ==
+              sizeof(Ngs2CustomSubmixerRackOption) - sizeof(Ngs2RackOption));
+
 struct Ps4WaveformBlock {
     std::uint32_t data_offset, data_size, num_repeats, num_skip_samples, num_samples, reserved;
     std::uintptr_t user_data;
@@ -101,12 +145,48 @@ struct RackOptionBuffer { alignas(8) unsigned char bytes[2048]; };
 const Ngs2RackOption* RackOption(std::uint32_t rackId, const void* option, RackOptionBuffer& out) {
     if (!option) return nullptr;
     const auto& in = *static_cast<const Ps4RackOption*>(option);
+    std::memset(out.bytes, 0, sizeof(out.bytes));
+    auto& common = *reinterpret_cast<Ngs2RackOption*>(out.bytes);
+
+    if (rackId == SCE_NGS2_RACK_ID_CUSTOM_SUBMIXER) {
+        const auto& custom = *static_cast<const Ps4CustomSubmixerRackOption*>(option);
+        if (in.size != sizeof(Ps4CustomSubmixerRackOption)) {
+            ngs2_stop("NGS2: PS4 custom submixer option size " + std::to_string(in.size));
+        }
+
+        common.size = sizeof(Ngs2CustomSubmixerRackOption);
+        std::memcpy(common.name, in.name, sizeof(in.name));
+        common.flags = in.flags;
+        common.max_grain_samples = in.max_grain_samples;
+        common.max_voices = in.max_voices;
+        common.max_input_delay_blocks = in.max_input_delay_blocks;
+        common.max_matrices = in.max_matrices;
+        common.max_ports = in.max_ports;
+
+        // The PS4 and PS5 custom payloads have identical module/port record layouts.
+        // Only the common rack header differs (0x80 on PS4, 0xb0 internally).
+        constexpr std::size_t ps4TailSize = sizeof(Ps4CustomSubmixerRackOption) - sizeof(Ps4RackOption);
+        std::memcpy(out.bytes + sizeof(Ngs2RackOption),
+                    reinterpret_cast<const unsigned char*>(option) + sizeof(Ps4RackOption), ps4TailSize);
+
+        auto& translated = *reinterpret_cast<Ngs2CustomSubmixerRackOption*>(out.bytes);
+        if (custom.custom_rack_option.num_modules <= SCE_NGS2_CUSTOM_MAX_MODULES) {
+            for (std::uint32_t i = 0; i < custom.custom_rack_option.num_modules; ++i) {
+                auto& module = translated.custom_rack_option.module[i];
+                if (module.module_id == SCE_NGS2_PS4_CUSTOM_MODULE_ID_CHORUS) {
+                    module.module_id = NGS2_INTERNAL_CUSTOM_MODULE_ID_PS4_CHORUS;
+                } else if (module.module_id == SCE_NGS2_PS4_CUSTOM_MODULE_ID_DELAY) {
+                    module.module_id = NGS2_INTERNAL_CUSTOM_MODULE_ID_PS4_DELAY;
+                }
+            }
+        }
+        return &common;
+    }
+
     const std::size_t tail = RackTailWords(rackId) * 4;
     if (in.size != ((sizeof(Ps4RackOption) + tail + 7) & ~std::size_t(7))) {
         ngs2_stop("NGS2: PS4 rack option size " + std::to_string(in.size) + " for rack " + Ngs2Hex(rackId));
     }
-    std::memset(out.bytes, 0, sizeof(out.bytes));
-    auto& common = *reinterpret_cast<Ngs2RackOption*>(out.bytes);
     common.size = (sizeof(Ngs2RackOption) + tail + 7) & ~std::size_t(7);
     std::memcpy(common.name, in.name, sizeof(in.name));
     common.flags = in.flags;
@@ -147,6 +227,11 @@ int APS5_VABI RackQueryBufferSize(std::uint32_t rackId, const void* option, Ngs2
 }
 
 bool Implemented(std::uint32_t id) {
+    const std::uint32_t moduleParamId = id & ~0x1fu;
+    if (moduleParamId == SCE_NGS2_PS4_CUSTOM_VOICE_PARAM_CHORUS ||
+        moduleParamId == SCE_NGS2_PS4_CUSTOM_VOICE_PARAM_DELAY) {
+        return true;
+    }
     switch (id) {
         case 1: case 2: case 3: case 4: case 5: case 6: case 7:
         case SCE_NGS2_SAMPLER_VOICE_PARAM_SETUP: case SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS:

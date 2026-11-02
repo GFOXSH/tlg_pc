@@ -166,6 +166,8 @@ struct Ngs2Voice {
     float lfeLevel = 1.0f;
     std::vector<Ngs2UserFx2> userFx;
     std::vector<Ngs2VoiceCustomUserFx> customUserFx;
+    // PS4 built-in custom-module parameters are retained per voice for the DSP layer.
+    std::vector<std::vector<std::uint8_t>> customModuleParams;
     Ngs2UserFxProcessHandler userFxHandler = nullptr;
     std::array<std::uintptr_t, 3> userFxData{};
     std::uint32_t userFxFlags = 0;
@@ -177,6 +179,15 @@ struct Ngs2Voice {
     void SetEvent(std::uint32_t eventId);
     void ResetSetup();
     const std::uint8_t* WaveformData() const;
+};
+
+struct Ngs2CustomModuleRuntimeInfo {
+    std::uint32_t moduleId = 0;
+    std::uint32_t sourceBufferId = 0;
+    std::uint32_t extraBufferId = 0;
+    std::uint32_t destBufferId = 0;
+    std::uint32_t stateOffset = 0;
+    std::uint32_t stateSize = 0;
 };
 
 struct Ngs2Rack {
@@ -195,6 +206,11 @@ struct Ngs2Rack {
     std::vector<Ngs2Voice> voices;
     std::vector<Ngs2CustomUserFx2ModuleOption> userFx;
     std::vector<std::vector<std::uint8_t>> userFxCommon;
+    std::uint32_t customStateSize = 0;
+    std::uint32_t customNumBuffers = 0;
+    std::vector<Ngs2CustomModuleRuntimeInfo> customModules;
+    std::vector<Ngs2CustomRackPortInfo> customPorts;
+    std::vector<std::vector<std::uint8_t>> customModuleOptions;
     std::vector<std::uint32_t> customModuleIds;
     std::thread::id lockOwner{};
     std::uint32_t lockDepth = 0;

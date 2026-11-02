@@ -76,6 +76,15 @@ static constexpr std::uint32_t SCE_NGS2_CUSTOM_MODULE_ID_FILTER = 0x13;
 static constexpr std::uint32_t SCE_NGS2_CUSTOM_MODULE_ID_USER_FX = 0x1d;
 static constexpr std::uint32_t SCE_NGS2_CUSTOM_MODULE_ID_USER_FX2 = 0x1f;
 
+// PS4 libSceNGS2 assigns 0x1c/0x1d to built-in Chorus/Delay modules.
+// Keep their internal IDs separate from the PS5 namespace, where 0x1d is User FX.
+static constexpr std::uint32_t SCE_NGS2_PS4_CUSTOM_MODULE_ID_CHORUS = 0x1c;
+static constexpr std::uint32_t SCE_NGS2_PS4_CUSTOM_MODULE_ID_DELAY = 0x1d;
+static constexpr std::uint32_t NGS2_INTERNAL_CUSTOM_MODULE_ID_PS4_CHORUS = 0x1001;
+static constexpr std::uint32_t NGS2_INTERNAL_CUSTOM_MODULE_ID_PS4_DELAY = 0x1002;
+static constexpr std::uint32_t SCE_NGS2_PS4_CUSTOM_VOICE_PARAM_CHORUS = 0x40001c00;
+static constexpr std::uint32_t SCE_NGS2_PS4_CUSTOM_VOICE_PARAM_DELAY = 0x40001d00;
+
 static constexpr std::uint32_t SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE = 1;
 static constexpr std::uint32_t SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND = 2;
 static constexpr std::uint32_t SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET = 4;
@@ -185,6 +194,24 @@ struct Ngs2ReverbRackOption {
 struct Ngs2CustomModuleOption {
     std::uint32_t size;
 };
+
+// PS4 built-in custom-submixer module option records. The layouts are shared
+// with the PS4 ABI and are copied into Runtime-owned storage at rack creation.
+struct Ngs2CustomChorusModuleOption {
+    Ngs2CustomModuleOption custom_module_option;
+    std::uint32_t max_phases;
+    std::uint32_t reserved;
+};
+static_assert(sizeof(Ngs2CustomChorusModuleOption) == 12);
+
+struct Ngs2CustomDelayModuleOption {
+    Ngs2CustomModuleOption custom_module_option;
+    std::uint32_t type;
+    std::uint32_t max_taps;
+    float max_length;
+    std::uint32_t reserved;
+};
+static_assert(sizeof(Ngs2CustomDelayModuleOption) == 20);
 
 struct Ngs2UserFx2SetupContext {
     void* common;
@@ -334,6 +361,41 @@ struct Ngs2VoiceParamHeader {
     std::int16_t next;
     std::uint32_t id;
 };
+
+struct Ngs2CustomVoiceChorusParam {
+    Ngs2VoiceParamHeader header;
+    std::uint32_t flags;
+    std::uint32_t num_phases;
+    std::uint32_t channel_mask;
+    float input_level;
+    float delay_time;
+    float modulation_ratio;
+    float modulation_depth;
+    float feedback_level;
+    float wet_level;
+    float dry_level;
+};
+static_assert(sizeof(Ngs2CustomVoiceChorusParam) == 0x30);
+
+struct Ngs2CustomDelayTapInfo {
+    float tap_level;
+    float delay_time;
+};
+
+struct Ngs2CustomVoiceDelayParam {
+    Ngs2VoiceParamHeader header;
+    float dry_level;
+    float wet_level;
+    float input_level;
+    float feedback_level;
+    float lowpass_fc;
+    std::uint32_t num_taps;
+    Ngs2CustomDelayTapInfo tap[8];
+    float input_mix_level[8];
+    std::uint32_t channel_mask;
+    std::uint32_t flags;
+};
+static_assert(sizeof(Ngs2CustomVoiceDelayParam) == 0x88);
 
 struct Ngs2VoiceMatrixLevelsParam {
     Ngs2VoiceParamHeader header;
