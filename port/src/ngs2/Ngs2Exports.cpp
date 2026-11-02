@@ -114,6 +114,14 @@ struct Ps4SubmixerVoiceState {
     std::uint32_t state_flags;
     float envelope_height, peak_height, compressor_height;
 };
+static_assert(sizeof(Ps4SubmixerVoiceState) == 16);
+
+struct Ps4CustomSubmixerVoiceState {
+    std::uint32_t state_flags;
+    std::uint32_t reserved;
+    std::uint32_t reserved2;
+};
+static_assert(sizeof(Ps4CustomSubmixerVoiceState) == 12);
 
 const Ngs2SystemOption* SystemOption(const void* option, Ngs2SystemOption& out) {
     if (!option) return nullptr;
@@ -229,10 +237,13 @@ int APS5_VABI RackQueryBufferSize(std::uint32_t rackId, const void* option, Ngs2
 bool Implemented(std::uint32_t id) {
     const std::uint32_t moduleParamId = id & ~0x1fu;
     if (moduleParamId == SCE_NGS2_PS4_CUSTOM_VOICE_PARAM_CHORUS ||
-        moduleParamId == SCE_NGS2_PS4_CUSTOM_VOICE_PARAM_DELAY) {
+        moduleParamId == SCE_NGS2_PS4_CUSTOM_VOICE_PARAM_DELAY ||
+        moduleParamId == SCE_NGS2_CUSTOM_VOICE_PARAM_FILTER ||
+        moduleParamId == SCE_NGS2_CUSTOM_VOICE_PARAM_USER_FX2) {
         return true;
     }
     switch (id) {
+        case SCE_NGS2_CUSTOM_SUBMIXER_VOICE_PARAM_SETUP:
         case 1: case 2: case 3: case 4: case 5: case 6: case 7:
         case SCE_NGS2_SAMPLER_VOICE_PARAM_SETUP: case SCE_NGS2_SAMPLER_VOICE_PARAM_ADD_WAVEFORM_BLOCKS:
         case SCE_NGS2_SAMPLER_VOICE_PARAM_EXIT_LOOP: case SCE_NGS2_SAMPLER_VOICE_PARAM_PITCH:
@@ -350,9 +361,20 @@ int APS5_VABI VoiceControl(Ngs2Handle voice, const Ngs2VoiceParamHeader* params)
     return sceNgs2VoiceControl(voice, reinterpret_cast<const Ngs2VoiceParamHeader*>(base));
 }
 
-// PS4 states: 4 bytes (flags only), 16 (submixer), 48 (sampler); no error code field.
+// PS4 states: 4 bytes (flags only), 12 (custom submixer), 16 (submixer),
+// and 48 (sampler); PS4 structures do not expose the internal error_code field.
 int APS5_VABI VoiceGetState(Ngs2Handle voice, void* state, std::size_t size) {
     if (size == sizeof(std::uint32_t)) return sceNgs2VoiceGetStateFlags(voice, static_cast<std::uint32_t*>(state));
+    if (size == sizeof(Ps4CustomSubmixerVoiceState)) {
+        if (state == nullptr) return SCE_NGS2_ERROR_INVALID_OUT_ADDRESS;
+        Ngs2CustomSubmixerVoiceState wide{};
+        const int result = sceNgs2VoiceGetState(voice, &wide.voice_state, sizeof(wide));
+        if (result == SCE_NGS2_OK) {
+            *static_cast<Ps4CustomSubmixerVoiceState*>(state) = {
+                wide.voice_state.state_flags, wide.reserved[0], wide.reserved[1]};
+        }
+        return result;
+    }
     if (size == sizeof(Ps4SamplerVoiceState)) {
         Ngs2SamplerVoiceState wide{};
         const int result = sceNgs2VoiceGetState(voice, &wide.voice_state, sizeof(wide));

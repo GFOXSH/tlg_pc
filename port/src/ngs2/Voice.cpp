@@ -641,6 +641,13 @@ int APS5_VABI sceNgs2VoiceGetState(uintptr_t voice_handle, Ngs2VoiceState* state
             submixer.voice_state.state_flags = voice.stateFlags;
             return SCE_NGS2_OK;
         }
+        case SCE_NGS2_RACK_ID_CUSTOM_SUBMIXER: {
+            if (state_size != sizeof(Ngs2CustomSubmixerVoiceState)) return SCE_NGS2_ERROR_INVALID_OUT_SIZE;
+            auto& custom = *reinterpret_cast<Ngs2CustomSubmixerVoiceState*>(state);
+            custom = {};
+            custom.voice_state.state_flags = voice.stateFlags;
+            return SCE_NGS2_OK;
+        }
         case SCE_NGS2_RACK_ID_CUSTOM_SAMPLER: {
             if (state_size != sizeof(Ngs2CustomSamplerVoiceState)) return SCE_NGS2_ERROR_INVALID_OUT_SIZE;
             auto& sampler = *reinterpret_cast<Ngs2CustomSamplerVoiceState*>(state);

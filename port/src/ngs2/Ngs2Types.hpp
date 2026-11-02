@@ -683,6 +683,12 @@ struct Ngs2SubmixerVoiceState {
 };
 static_assert(sizeof(Ngs2SubmixerVoiceState) == 20);
 
+struct Ngs2CustomSubmixerVoiceState {
+    Ngs2VoiceState voice_state;
+    std::uint32_t reserved[2];
+};
+static_assert(sizeof(Ngs2CustomSubmixerVoiceState) == 16);
+
 struct Ngs2SamplerVoiceState {
     Ngs2VoiceState voice_state;
     float envelope_height;

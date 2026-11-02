@@ -17,6 +17,12 @@ void Ngs2CheckCustomRack(const Ngs2CustomRackOption& option) {
     if (option.num_modules > SCE_NGS2_CUSTOM_MAX_MODULES || option.rack_option.max_ports > SCE_NGS2_CUSTOM_MAX_PORTS) APS5_INVALID_ARG_EX;
     for (std::uint32_t m = 0; m < option.num_modules; m++) {
         const auto& info = option.module[m];
+        // Module state is a slice of the rack-owned state block. Check the offset
+        // first and subtract to avoid overflow in state_offset + state_size.
+        if (info.state_offset > option.state_size ||
+            info.state_size > option.state_size - info.state_offset) {
+            APS5_INVALID_ARG_EX;
+        }
         if (info.module_id == SCE_NGS2_CUSTOM_MODULE_ID_USER_FX2) {
             if (info.option == nullptr || info.option->size != sizeof(Ngs2CustomUserFx2ModuleOption)) APS5_INVALID_ARG_EX;
             if (info.source_buffer_id != 0 || info.dest_buffer_id != 0) APS5_INVALID_ARG_EX;
@@ -152,23 +158,43 @@ void Ngs2ApplyCustomParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& param) {
     if (moduleParamId == SCE_NGS2_PS4_CUSTOM_VOICE_PARAM_CHORUS ||
         moduleParamId == SCE_NGS2_PS4_CUSTOM_VOICE_PARAM_DELAY) {
         if (rackId != SCE_NGS2_RACK_ID_CUSTOM_SUBMIXER) {
-            ngs2_stop("NGS2: PS4 custom effect parameter belongs to another rack");
+            ngs2_stop("NGS2: custom module parameter belongs to another rack");
         }
         const auto index = param.id & 0x1fu;
-        const auto expectedModuleId = moduleParamId == SCE_NGS2_PS4_CUSTOM_VOICE_PARAM_CHORUS
-                                          ? NGS2_INTERNAL_CUSTOM_MODULE_ID_PS4_CHORUS
-                                          : NGS2_INTERNAL_CUSTOM_MODULE_ID_PS4_DELAY;
-        const std::size_t expectedSize = moduleParamId == SCE_NGS2_PS4_CUSTOM_VOICE_PARAM_CHORUS
-                                             ? sizeof(Ngs2CustomVoiceChorusParam)
-                                             : sizeof(Ngs2CustomVoiceDelayParam);
-        if (index >= voice.rack->customModuleIds.size() || index >= voice.customModuleParams.size() ||
-            voice.rack->customModuleIds[index] != expectedModuleId) {
-            APS5_INVALID_ARG_EX;
+        if (index >= voice.rack->customModuleIds.size()) APS5_INVALID_ARG_EX;
+
+        const auto moduleId = voice.rack->customModuleIds[index];
+        if (moduleParamId == SCE_NGS2_PS4_CUSTOM_VOICE_PARAM_CHORUS) {
+            if (moduleId != NGS2_INTERNAL_CUSTOM_MODULE_ID_PS4_CHORUS ||
+                index >= voice.customModuleParams.size()) {
+                APS5_INVALID_ARG_EX;
+            }
+            auto& storage = voice.customModuleParams[index];
+            if (param.size != sizeof(Ngs2CustomVoiceChorusParam) ||
+                storage.size() != sizeof(Ngs2CustomVoiceChorusParam)) {
+                APS5_INVALID_ARG_EX;
+            }
+            std::memcpy(storage.data(), &param, sizeof(Ngs2CustomVoiceChorusParam));
+            return;
         }
-        auto& storage = voice.customModuleParams[index];
-        if (param.size != expectedSize || storage.size() != expectedSize) APS5_INVALID_ARG_EX;
-        std::memcpy(storage.data(), &param, expectedSize);
-        return;
+
+        // 0x40001d00 is PS4 Delay and also the retained PS5 User-FX parameter ID.
+        // Resolve it by configured module instead of shadowing User-FX unconditionally.
+        if (moduleId == NGS2_INTERNAL_CUSTOM_MODULE_ID_PS4_DELAY) {
+            if (index >= voice.customModuleParams.size()) APS5_INVALID_ARG_EX;
+            auto& storage = voice.customModuleParams[index];
+            if (param.size != sizeof(Ngs2CustomVoiceDelayParam) ||
+                storage.size() != sizeof(Ngs2CustomVoiceDelayParam)) {
+                APS5_INVALID_ARG_EX;
+            }
+            std::memcpy(storage.data(), &param, sizeof(Ngs2CustomVoiceDelayParam));
+            return;
+        }
+        if (moduleId == SCE_NGS2_CUSTOM_MODULE_ID_USER_FX) {
+            SetCustomUserFxParam(voice, index, ParamAs<Ngs2CustomVoiceUserFxParam>(param));
+            return;
+        }
+        APS5_INVALID_ARG_EX;
     }
     if (param.id == SCE_NGS2_CUSTOM_SUBMIXER_VOICE_PARAM_SETUP) {
         if (rackId != SCE_NGS2_RACK_ID_CUSTOM_SUBMIXER) ngs2_stop("NGS2: voice param " + Ngs2Hex(param.id) + " belongs to another rack");
@@ -189,7 +215,8 @@ void Ngs2ApplyCustomParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& param) {
         filter.type = custom.type;
         filter.channel_mask = custom.channel_mask;
         if (custom.type == 0) {
-            filter = {};
+            // Keep the resolved module index: disabling a nonzero custom-filter
+            // module must not accidentally clear filter slot 0.
         } else if (custom.type == 1) {
             filter.frequency = custom.param.fcq.frequency;
             filter.q = custom.param.fcq.q;
@@ -205,11 +232,6 @@ void Ngs2ApplyCustomParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& param) {
             ngs2_stop("NGS2: voice param " + Ngs2Hex(param.id) + " belongs to another rack");
         }
         SetUserFxParam(voice, param.id & 0x1f, ParamAs<Ngs2CustomVoiceUserFx2Param>(param));
-        return;
-    }
-    if ((param.id & ~0x1fu) == SCE_NGS2_CUSTOM_VOICE_PARAM_USER_FX) {
-        if (rackId != SCE_NGS2_RACK_ID_CUSTOM_SUBMIXER) ngs2_stop("NGS2: voice param " + Ngs2Hex(param.id) + " belongs to another rack");
-        SetCustomUserFxParam(voice, param.id & 0x1f, ParamAs<Ngs2CustomVoiceUserFxParam>(param));
         return;
     }
     if (rackId != SCE_NGS2_RACK_ID_CUSTOM_SUBMIXER) ngs2_stop("NGS2: voice param " + Ngs2Hex(param.id) + " belongs to another rack");
