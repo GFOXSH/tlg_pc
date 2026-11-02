@@ -386,7 +386,8 @@ void Ngs2ProcessUserFx(Ngs2Voice& voice, std::uint32_t grain, std::uint32_t samp
             if (voice.delay.configured) {
                 ProcessDelay(voice, grain);
                 voice.hasSamples = HasSamples(voice);
-            } else if (m < voice.customUserFx.size() && voice.customUserFx[m].handler != nullptr) {
+            }
+            if (m < voice.customUserFx.size() && voice.customUserFx[m].handler != nullptr) {
                 auto& fx = voice.customUserFx[m];
                 Ngs2UserFxProcessContext context{channels.data(), fx.data[0], fx.data[1], fx.data[2],
                                                  fx.flags, voice.channels, grain, sampleRate};
