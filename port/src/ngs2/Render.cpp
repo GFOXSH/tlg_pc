@@ -298,6 +298,49 @@ static void MixInputs(Ngs2Voice& voice, const std::vector<Ngs2Voice*>& voices, s
     }
 }
 
+// The mastering limiter uses the native 32-sample peak detector and a per-channel
+// attack/release gain envelope. It is intentionally a soft limiter, not a hard clipper.
+static void ApplyMasteringLimiter(Ngs2Voice& voice, std::uint32_t grain, std::uint32_t systemRate) {
+    auto& limiter = voice.limiter;
+    if (!limiter.enabled) {
+        limiter.gain.fill(1.0f);
+        return;
+    }
+    if (limiter.sampleRate != systemRate) {
+        const float attackSamples = std::max(1.0f, static_cast<float>(systemRate) * 0.001f);
+        const float releaseSamples = std::max(1.0f, static_cast<float>(systemRate) * 0.010f);
+        limiter.attackCoefficient = std::exp(-1.0f / attackSamples);
+        limiter.releaseCoefficient = std::exp(-1.0f / releaseSamples);
+        limiter.sampleRate = systemRate;
+    }
+    for (std::uint32_t start = 0; start < grain; start += 32) {
+        const std::uint32_t count = std::min(32u, grain - start);
+        float levels[NGS2_MAX_CHANNELS]{};
+        for (std::uint32_t channel = 0; channel < voice.channels; channel++) {
+            const float* samples = voice.samples.data() + static_cast<std::size_t>(channel) * grain + start;
+            for (std::uint32_t i = 0; i < count; i++) levels[channel] = std::max(levels[channel], std::abs(samples[i]));
+        }
+        for (std::uint32_t channel = 0; channel < voice.channels; channel++) {
+            const float detector = levels[channel];
+            const float target = detector > limiter.threshold && detector > 0.0f ? limiter.threshold / detector : 1.0f;
+            float gain = limiter.gain[channel];
+            const float coefficient = gain <= target ? limiter.releaseCoefficient : limiter.attackCoefficient;
+            float* samples = voice.samples.data() + static_cast<std::size_t>(channel) * grain + start;
+            for (std::uint32_t i = 0; i < count; i++) {
+                gain = target + coefficient * (gain - target);
+                samples[i] *= gain;
+            }
+            limiter.gain[channel] = gain;
+        }
+    }
+}
+
+static float MeasureVoicePeak(const Ngs2Voice& voice) {
+    float peak = 0.0f;
+    for (float sample : voice.samples) peak = std::max(peak, std::abs(sample));
+    return peak;
+}
+
 static void RenderVoice(Ngs2Voice& voice, const std::vector<Ngs2Voice*>& voices, std::uint32_t grain, std::uint32_t systemRate) {
     if (voice.rendered) return;
     if (voice.rendering) ngs2_stop("NGS2: the voice patches form a cycle");
@@ -324,7 +367,11 @@ static void RenderVoice(Ngs2Voice& voice, const std::vector<Ngs2Voice*>& voices,
         if (voice.rack->rackId == SCE_NGS2_RACK_ID_REVERB && voice.reverb) voice.hasSamples = Ngs2ProcessReverb(voice, grain, systemRate);
         Ngs2ProcessLegacyUserFx(voice, grain, systemRate);
         Ngs2ProcessUserFx(voice, grain, systemRate);
+        if (voice.rack->rackId == SCE_NGS2_RACK_ID_MASTERING && voice.hasSamples) {
+            ApplyMasteringLimiter(voice, grain, systemRate);
+        }
     }
+    voice.peakHeight = voice.hasSamples ? MeasureVoicePeak(voice) : 0.0f;
     voice.rendered = true;
 }
 
