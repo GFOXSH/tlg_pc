@@ -2,6 +2,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -11,6 +13,31 @@
 
 static constexpr std::uint32_t USER_FX2_FLAG_FIRST_PROCESS = 1;
 static constexpr std::uint32_t USER_FX2_FLAG_PARAM_CHANGED = 2;
+
+struct Ngs2CustomVoiceChorusParam {
+    Ngs2VoiceParamHeader header;
+    std::uint32_t reserved;
+    std::uint32_t phases;
+    std::uint32_t mask;
+    float gain, delay_ms, rate_hz, depth, feedback, wet, dry;
+};
+static_assert(sizeof(Ngs2CustomVoiceChorusParam) == 48);
+
+struct Ngs2CustomVoiceDelayParam {
+    Ngs2VoiceParamHeader header;
+    float dry, wet, gain, feedback, lowpass_hz;
+    std::uint32_t taps;
+    float tap_level[8];
+    float tap_ms[8];
+    float input_gain[8];
+    std::uint32_t mask, flags;
+};
+static_assert(sizeof(Ngs2CustomVoiceDelayParam) == 136);
+
+static float ClampFinite(float value, float low, float high) {
+    if (!std::isfinite(value)) APS5_INVALID_ARG_EX;
+    return std::clamp(value, low, high);
+}
 
 void Ngs2CheckCustomRack(const Ngs2CustomRackOption& option) {
     if (option.num_buffers != 1) ngs2_stop("NGS2: custom racks with " + std::to_string(option.num_buffers) + " buffers are not implemented");
