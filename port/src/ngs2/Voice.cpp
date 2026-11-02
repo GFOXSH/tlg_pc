@@ -24,14 +24,14 @@ static constexpr float MAX_MATRIX_LEVEL = 4.0f;
 void Ngs2Voice::SetEvent(std::uint32_t eventId) {
     switch (eventId) {
         case SCE_NGS2_VOICE_EVENT_PLAY:
-            if (state == Ngs2PlayState::Empty || state == Ngs2PlayState::Stopped) {
+            if (state == Ngs2PlayState::Empty || state == Ngs2PlayState::Ready || state == Ngs2PlayState::Stopped) {
                 state = Ngs2PlayState::Playing;
                 envelope.releasing = false;
                 envelope.segment = 0;
                 envelope.position = 0;
                 envelope.start = 0.0f;
                 envelope.gain = envelope.forward.empty() ? 1.0f : 0.0f;
-                stateFlags |= SCE_NGS2_VOICE_STATE_FLAG_INUSE;
+                stateFlags = static_cast<std::uint32_t>(state);
                 if (userFxHandler) userFxFlags = 1;
             }
             break;
@@ -51,6 +51,7 @@ void Ngs2Voice::SetEvent(std::uint32_t eventId) {
         case SCE_NGS2_VOICE_EVENT_STOP_IMM:
         case SCE_NGS2_VOICE_EVENT_KILL:
             state = Ngs2PlayState::Empty;
+            stateFlags = 0;
             Ngs2ClearReverb(*this);
             break;
         case SCE_NGS2_VOICE_EVENT_PAUSE:

@@ -26,7 +26,9 @@ void Ngs2CheckCustomRack(const Ngs2CustomRackOption& option) {
         if (info.module_id == SCE_NGS2_CUSTOM_MODULE_ID_USER_FX2) {
             if (info.option == nullptr || info.option->size != sizeof(Ngs2CustomUserFx2ModuleOption)) APS5_INVALID_ARG_EX;
             if (info.source_buffer_id != 0 || info.dest_buffer_id != 0) APS5_INVALID_ARG_EX;
-            if (reinterpret_cast<const Ngs2CustomUserFx2ModuleOption*>(info.option)->process_handler == nullptr) APS5_INVALID_ARG_EX;
+            const auto& module = *reinterpret_cast<const Ngs2CustomUserFx2ModuleOption*>(info.option);
+            if (module.control_handler != nullptr) ngs2_stop("NGS2: UserFx2 control handler is not implemented");
+            if (module.process_handler == nullptr) APS5_INVALID_ARG_EX;
         } else if (info.module_id == NGS2_INTERNAL_CUSTOM_MODULE_ID_PS4_CHORUS) {
             if (info.option == nullptr || info.option->size != sizeof(Ngs2CustomChorusModuleOption)) APS5_INVALID_ARG_EX;
             if (info.source_buffer_id != 0 || info.dest_buffer_id != 0) APS5_INVALID_ARG_EX;
@@ -128,11 +130,19 @@ static void SetupCustomSubmixer(Ngs2Voice& voice, const Ngs2CustomSubmixerVoiceS
     if (setup.flags != 0) ngs2_stop("NGS2: custom submixer setup flags are not implemented");
     if (setup.num_input_channels != setup.num_output_channels) ngs2_stop("NGS2: custom submixer channel conversion is not implemented");
     if (setup.num_input_channels == 0 || setup.num_input_channels > voice.rack->maxChannels) APS5_INVALID_ARG_EX;
+    // Keep the standard submixer lifecycle: configured voices are READY, not PLAYING.
+    voice.ResetSetup();
     voice.channels = setup.num_input_channels;
+    voice.state = Ngs2PlayState::Ready;
+    voice.stateFlags = static_cast<std::uint32_t>(voice.state);
 }
 
 static void SetUserFxParam(Ngs2Voice& voice, std::uint32_t index, const Ngs2CustomVoiceUserFx2Param& param) {
-    if (index >= voice.userFx.size()) APS5_INVALID_ARG_EX;
+    if (index >= voice.userFx.size() || index >= voice.rack->userFx.size() ||
+        index >= voice.rack->customModuleIds.size() ||
+        voice.rack->customModuleIds[index] != SCE_NGS2_CUSTOM_MODULE_ID_USER_FX2) {
+        APS5_INVALID_ARG_EX;
+    }
     const auto& module = voice.rack->userFx[index];
     if (module.control_handler != nullptr) ngs2_stop("NGS2: the UserFx2 control handler is not implemented");
     auto& fx = voice.userFx[index];
