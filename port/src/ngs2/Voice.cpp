@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <mutex>
 #include <numbers>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -202,7 +203,8 @@ static constexpr std::uint32_t WAVEFORM_TYPE_VAG = 0x1c;
 
 static void DecodeVagFrame(const std::uint8_t* data, std::array<std::int32_t, 4>& history,
                            std::array<std::int16_t, 28>& output) {
-    const std::uint32_t index = (static_cast<std::uint32_t>(data[1] & 0xf0) | (data[0] >> 4)) & 0x7f;
+    std::uint32_t index = static_cast<std::uint32_t>(data[1] & 0xf0) | (data[0] >> 4);
+    if (index > 127) index = 0;
     const int shift = data[0] & 15;
     const int flag = data[1] & 15;
     const float* coefficients = HEVAG_COEFS[index];
