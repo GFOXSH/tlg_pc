@@ -102,6 +102,15 @@ struct Ps4SamplerVoiceState {
     const void* waveform_data;
 };
 static_assert(sizeof(Ps4SamplerVoiceState) == 48);
+struct Ps4CustomSamplerVoiceState {
+    std::uint32_t state_flags;
+    std::int32_t error_code;
+    std::uint32_t reserved[2];
+    std::uint64_t num_decoded_samples;
+    std::uint64_t reserved2[3];
+};
+static_assert(sizeof(Ps4CustomSamplerVoiceState) == 48);
+static_assert(offsetof(Ps4CustomSamplerVoiceState, num_decoded_samples) == 16);
 // The cutoff form (fc, q, level) of the union; the coefficient form has no PS5 counterpart here.
 struct Ps4SamplerFilterParam {
     Ngs2VoiceParamHeader header;
@@ -250,8 +259,10 @@ bool Implemented(std::uint32_t id) {
         case SCE_NGS2_SAMPLER_VOICE_PARAM_FILTER: case SCE_NGS2_SUBMIXER_VOICE_PARAM_SETUP:
         case SCE_NGS2_SUBMIXER_VOICE_PARAM_USER_FX: case SCE_NGS2_REVERB_VOICE_PARAM_SETUP:
         case SCE_NGS2_REVERB_VOICE_PARAM_I3DL2: case SCE_NGS2_MASTERING_VOICE_PARAM_SETUP:
+        case SCE_NGS2_MASTERING_VOICE_PARAM_LIMITER:
         case SCE_NGS2_MASTERING_VOICE_PARAM_GAIN: case SCE_NGS2_MASTERING_VOICE_PARAM_OUTPUT:
-        case 0x10000006: case 0x20000002: case 0x20000006: return true; // envelope, compressor, submixer filter
+        case SCE_NGS2_SAMPLER_VOICE_PARAM_PEAK_METER:
+        case 0x10000006: case 0x20000002: case 0x20000006: return true; // envelope, peak meter, compressor, submixer filter
         default: return false;
     }
 }
@@ -324,6 +335,7 @@ int APS5_VABI VoiceControl(Ngs2Handle voice, const Ngs2VoiceParamHeader* params)
             wide.frequency = in.frequency;
             wide.q = in.q;
             wide.level = in.level;
+            std::memcpy(wide.reserved, in.reserved, sizeof(in.reserved));
             list.resize(list.size() + sizeof(wide) / 8);
             std::memcpy(reinterpret_cast<std::uint8_t*>(list.data()) + at, &wide, sizeof(wide));
             if (param->next == 0) break;
@@ -376,6 +388,19 @@ int APS5_VABI VoiceGetState(Ngs2Handle voice, void* state, std::size_t size) {
         return result;
     }
     if (size == sizeof(Ps4SamplerVoiceState)) {
+        Ngs2CustomSamplerVoiceState custom{};
+        const int customResult = sceNgs2VoiceGetState(voice, &custom.voice_state, sizeof(custom));
+        if (customResult == SCE_NGS2_OK) {
+            Ps4CustomSamplerVoiceState translated{};
+            translated.state_flags = custom.voice_state.state_flags;
+            translated.error_code = custom.voice_state.error_code;
+            std::memcpy(translated.reserved, custom.reserved, sizeof(translated.reserved));
+            translated.num_decoded_samples = custom.num_decoded_samples;
+            std::memcpy(translated.reserved2, custom.reserved2, sizeof(translated.reserved2));
+            *static_cast<Ps4CustomSamplerVoiceState*>(state) = translated;
+            return SCE_NGS2_OK;
+        }
+        if (customResult != SCE_NGS2_ERROR_INVALID_OUT_SIZE) return customResult;
         Ngs2SamplerVoiceState wide{};
         const int result = sceNgs2VoiceGetState(voice, &wide.voice_state, sizeof(wide));
         if (result == SCE_NGS2_OK && state)

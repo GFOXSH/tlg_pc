@@ -83,6 +83,8 @@ struct Ngs2FilterHistory {
 
 struct Ngs2Filter {
     bool enabled = false;
+    std::uint32_t location = 0;
+    std::uint32_t type = 0;
     std::uint64_t bypassMask = 0;
     double b0 = 1.0;
     double b1 = 0.0;
@@ -109,12 +111,37 @@ struct Ngs2Envelope {
     float gain = 1.0f;
 };
 
-// knack_pc: PS4 submixer compressor (param 0x20000002): linear threshold, ratio, attack and
-// release in seconds, output level.
-struct Ngs2Compressor {
+// Shared PS4 Dynamics processor state: submixer compressor and mastering limiter use the
+// same block detector and attack/release gain smoothing, with independent per-voice instances.
+struct Ngs2Dynamics {
     bool enabled = false;
-    float threshold = 1.0f, ratio = 1.0f, attack = 0.0f, release = 0.0f, level = 1.0f;
-    float detector = 0.0f;
+    bool rms = false;
+    bool linkAllButLfe = false;
+    float threshold = 1.0f;
+    float ratio = 1.0f;
+    float knee = 0.0f;
+    float attack = 0.0f;
+    float release = 0.0f;
+    float level = 1.0f;
+    float attackCoefficient = 0.0f;
+    float releaseCoefficient = 0.0f;
+    std::array<float, NGS2_MAX_CHANNELS> gain{1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+};
+
+// Per-voice storage for one configured custom rack module. Parameters and DSP delay memory
+// share one owner and follow the rack's declared module order.
+struct Ngs2CustomModuleRuntime {
+    std::vector<std::uint8_t> param;
+    std::vector<float> line;
+    std::array<float, NGS2_MAX_CHANNELS> lowpassState{};
+    std::array<std::uint32_t, 8> tapDelay{};
+    std::uint32_t lineLength = 0;
+    std::uint32_t write = 0;
+    std::uint32_t type = 1;
+    float phase = 0.0f;
+    float lowpassCoefficient = 0.0f;
+    float maxLengthMs = 0.0f;
+    bool active = false;
 };
 
 struct Ngs2Port {
@@ -146,6 +173,7 @@ struct Ngs2Voice {
     std::uint32_t sampleRate = 0;
     std::uint32_t waveformType = 0;
     bool vag = false; // VAG waveform: blocks are decoded to 16-bit PCM (waveformType PCM_I16L)
+    std::array<std::array<float, 4>, NGS2_MAX_CHANNELS> vagHistory{};
     Ngs2Atrac9 atrac9;
     std::unique_ptr<Ngs2ReverbState, Ngs2ReverbDeleter> reverb;
     float pitch = 1.0f;
@@ -163,14 +191,16 @@ struct Ngs2Voice {
     std::vector<std::vector<float>> matrices;
     std::vector<Ngs2Filter> filters;
     Ngs2Envelope envelope;
-    Ngs2Compressor compressor;
+    Ngs2Dynamics compressor;
+    Ngs2Dynamics limiter;
+    float peak = 0.0f;
     std::uint32_t outputId = 0;
     float fbwLevel = 1.0f;
     float lfeLevel = 1.0f;
     std::vector<Ngs2UserFx2> userFx;
     std::vector<Ngs2VoiceCustomUserFx> customUserFx;
-    // PS4 built-in custom-module parameters are retained per voice for the DSP layer.
-    std::vector<std::vector<std::uint8_t>> customModuleParams;
+    // One per-voice owner for each configured custom module's parameters and DSP memory.
+    std::vector<Ngs2CustomModuleRuntime> customModuleRuntime;
     Ngs2UserFxProcessHandler userFxHandler = nullptr;
     std::array<std::uintptr_t, 3> userFxData{};
     std::uint32_t userFxFlags = 0;
@@ -278,12 +308,12 @@ std::size_t Ngs2Atrac9BlockBytes(const Ngs2Voice& voice, const Ngs2WaveformBlock
 void Ngs2RestartAtrac9(Ngs2Voice& voice);
 void Ngs2ConsumeAtrac9(Ngs2Voice& voice, std::uint32_t grain, std::uint32_t systemRate);
 bool Ngs2FinishBlock(Ngs2Voice& voice);
-void Ngs2CheckCustomRack(const Ngs2CustomRackOption& option);
+void Ngs2CheckCustomRack(std::uint32_t rackId, const Ngs2CustomRackOption& option);
 void Ngs2SetupUserFx(Ngs2Rack& rack, const Ngs2CustomRackOption& option);
 void Ngs2ResetUserFx2(Ngs2Voice& voice);
 void Ngs2CleanupUserFx(Ngs2Rack& rack);
 void Ngs2ApplyCustomParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& param);
-void Ngs2ProcessUserFx(Ngs2Voice& voice, std::uint32_t grain, std::uint32_t sampleRate);
+void Ngs2ProcessUserFxModule(Ngs2Voice& voice, std::uint32_t moduleIndex, std::uint32_t grain, std::uint32_t sampleRate);
 void Ngs2SetReverbParams(Ngs2Voice& voice, const Ngs2ReverbI3DL2Param& params);
 void Ngs2SetupReverb(Ngs2Voice& voice);
 void Ngs2ClearReverb(Ngs2Voice& voice);

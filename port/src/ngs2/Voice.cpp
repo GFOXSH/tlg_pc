@@ -53,6 +53,7 @@ void Ngs2Voice::SetEvent(std::uint32_t eventId) {
             state = Ngs2PlayState::Empty;
             stateFlags = 0;
             Ngs2ClearReverb(*this);
+            peak = 0.0f;
             break;
         case SCE_NGS2_VOICE_EVENT_PAUSE:
             if (state == Ngs2PlayState::Playing) state = Ngs2PlayState::Paused;
@@ -76,6 +77,31 @@ void Ngs2Voice::ResetSetup() {
     filters.clear();
     envelope = {};
     compressor = {};
+    limiter = {};
+    if (rack && rack->rackId == SCE_NGS2_RACK_ID_MASTERING) {
+        // Console mastering racks start with an enabled 0 dB limiter (1 ms attack / 10 ms release).
+        limiter.enabled = true;
+        limiter.threshold = 1.0f;
+        limiter.ratio = 0.0f;
+        limiter.knee = 0.0f;
+        limiter.attack = 0.001f;
+        limiter.release = 0.01f;
+        limiter.level = 1.0f;
+        limiter.gain.fill(1.0f);
+    }
+    peak = 0.0f;
+    vagHistory = {};
+    for (auto& module : customModuleRuntime) {
+        std::fill(module.param.begin(), module.param.end(), 0);
+        module.line.clear();
+        module.lowpassState = {};
+        module.tapDelay = {};
+        module.lineLength = 0;
+        module.write = 0;
+        module.phase = 0.0f;
+        module.lowpassCoefficient = 0.0f;
+        module.active = false;
+    }
     fbwLevel = 1.0f;
     lfeLevel = 1.0f;
     channels = 0;
@@ -194,31 +220,46 @@ static void ApplyCommonParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& param
     }
 }
 
-// knack_pc: VAG waveforms (type 0x1c) are HE-VAG (High Efficiency VAG, mono): 16-byte frames of 28
-// samples. Byte 0 holds the low predictor bits (high nibble) and the shift (low nibble), byte 1 the high
-// predictor bits (high nibble) and the flags (low nibble; 7 = silent frame); 4-bit samples follow, low
-// nibble first. 128 four-tap predictors (hevag_coefs.h); the first five are classic VAG's filters.
-// As vgmstream's decode_hevag (src/coding/psv_decoder.c); history is kept unclamped.
+// PS4 VAG waveforms (type 0x1c) are channel-interleaved HE-VAG groups: one 16-byte frame
+// per channel, each producing 28 samples. Each channel keeps its own four-sample predictor history
+// across frames and waveform blocks. Byte 0 contains predictor/shift; byte 1 contains predictor/flags.
 static constexpr std::uint32_t WAVEFORM_TYPE_VAG = 0x1c;
 
-static std::vector<std::int16_t> DecodeVag(const std::uint8_t* data, std::uint64_t bytes) {
-    std::vector<std::int16_t> out;
-    out.reserve(bytes / 16 * 28);
-    std::int32_t h1 = 0, h2 = 0, h3 = 0, h4 = 0;
-    for (std::uint64_t at = 0; at + 16 <= bytes; at += 16) {
-        std::uint32_t index = (data[at + 1] & 0xf0) | (data[at] >> 4);
-        if (index > 127) index = 0;
-        const int shift = data[at] & 15, flag = data[at + 1] & 15;
-        const float* c = HEVAG_COEFS[index];
-        for (int i = 0; i < 28; ++i) {
-            std::int32_t sample = 0;
-            if (flag < 7) {
-                const std::int32_t code = ((static_cast<std::int32_t>(data[at + 2 + i / 2] >> (i % 2 * 4)) & 15) ^ 8) - 8;
-                sample = (code * (1 << 12)) >> shift;
-                sample += static_cast<std::int32_t>(h1 * c[0] + h2 * c[1] + h3 * c[2] + h4 * c[3]);
-            }
-            out.push_back(static_cast<std::int16_t>(std::clamp(sample, -32768, 32767)));
-            h4 = h3; h3 = h2; h2 = h1; h1 = sample;
+static void DecodeVagFrame(const std::uint8_t* frame, std::array<float, 4>& history,
+                           std::int16_t* output, std::uint32_t stride) {
+    std::uint32_t index = (frame[1] & 0xf0u) | (frame[0] >> 4);
+    if (index > 127) index = 0;
+    const std::uint32_t shift = frame[0] & 0x0f;
+    const std::uint32_t flag = frame[1] & 0x0f;
+    const float* coefficients = HEVAG_COEFS[index];
+    for (std::uint32_t i = 0; i < 28; i++) {
+        float sample = 0.0f;
+        if (flag != 7) {
+            std::int32_t code = (i & 1) != 0 ? frame[2 + i / 2] >> 4 : frame[2 + i / 2] & 0x0f;
+            if (code >= 8) code -= 16;
+            sample = static_cast<float>((code * 4096) >> shift) +
+                     history[0] * coefficients[0] + history[1] * coefficients[1] +
+                     history[2] * coefficients[2] + history[3] * coefficients[3];
+        }
+        history[3] = history[2];
+        history[2] = history[1];
+        history[1] = history[0];
+        history[0] = sample;
+        const auto pcm = static_cast<std::int32_t>(std::clamp(sample, -32768.0f, 32767.0f));
+        output[i * stride] = static_cast<std::int16_t>(pcm);
+    }
+}
+
+static std::vector<std::int16_t> DecodeVag(const std::uint8_t* data, std::uint64_t bytes, Ngs2Voice& voice) {
+    const std::uint64_t groupBytes = static_cast<std::uint64_t>(voice.channels) * 16;
+    if (bytes % groupBytes != 0) ngs2_stop("NGS2: VAG data ends inside a channel group");
+    const std::uint64_t groups = bytes / groupBytes;
+    std::vector<std::int16_t> out(static_cast<std::size_t>(groups * 28 * voice.channels));
+    for (std::uint64_t group = 0; group < groups; group++) {
+        const auto* frames = data + group * groupBytes;
+        auto* decoded = out.data() + group * 28 * voice.channels;
+        for (std::uint32_t channel = 0; channel < voice.channels; channel++) {
+            DecodeVagFrame(frames + channel * 16, voice.vagHistory[channel], decoded + channel, voice.channels);
         }
     }
     return out;
@@ -233,7 +274,6 @@ static void SetupSampler(Ngs2Voice& voice, const Ngs2WaveformFormat& format) {
     }
     if (format.frame_offset != 0 || format.frame_margin != 0) ngs2_stop("NGS2: waveform frame offset and margin are not implemented");
     if (format.num_channels == 0 || format.num_channels > NGS2_MAX_CHANNELS || format.sample_rate == 0) APS5_INVALID_ARG_EX;
-    if (format.waveform_type == WAVEFORM_TYPE_VAG && format.num_channels != 1) ngs2_stop("NGS2: multichannel VAG is not implemented");
     voice.channels = format.num_channels;
     voice.sampleRate = format.sample_rate;
     voice.vag = format.waveform_type == WAVEFORM_TYPE_VAG;
@@ -281,6 +321,7 @@ static void AddWaveformBlocks(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBl
         voice.phase = 0;
         voice.waveformEnd = nullptr;
         if (voice.waveformType == SCE_NGS2_WAVEFORM_TYPE_ATRAC9) Ngs2RestartAtrac9(voice);
+        if (voice.vag) voice.vagHistory = {};
     }
     const std::size_t frameBytes = voice.channels * sizeof(std::int16_t);
     if (voice.vag) {
@@ -290,7 +331,7 @@ static void AddWaveformBlocks(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBl
             const auto& vag = param.blocks[i];
             if (vag.num_samples == 0 && vag.data_size == 0) continue;
             auto decoded = std::make_shared<const std::vector<std::int16_t>>(
-                DecodeVag(static_cast<const std::uint8_t*>(param.data) + vag.data_offset, vag.data_size));
+                DecodeVag(static_cast<const std::uint8_t*>(param.data) + vag.data_offset, vag.data_size, voice));
             // GOW3_NGS2_DUMP_VAG=<folder> (diagnostics): the first 40 blocks, raw and decoded.
             static const char* dump = std::getenv("GOW3_NGS2_DUMP_VAG");
             static int dumped = 0;
@@ -308,7 +349,8 @@ static void AddWaveformBlocks(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBl
             auto block = vag;
             block.data_offset = 0;
             block.data_size = decoded->size() * sizeof(std::int16_t);
-            if (block.num_samples == 0 || static_cast<std::uint64_t>(block.num_skip_samples) + block.num_samples > decoded->size()) {
+            const std::size_t decodedFrames = decoded->size() / voice.channels;
+            if (block.num_samples == 0 || static_cast<std::uint64_t>(block.num_skip_samples) + block.num_samples > decodedFrames) {
                 ngs2_stop("NGS2: VAG block " + std::to_string(i) + " does not fit its data");
             }
             Ngs2Block added{reinterpret_cast<const std::uint8_t*>(decoded->data()), block};
@@ -374,65 +416,104 @@ void Ngs2SetFilter(Ngs2Voice& voice, const Ngs2SamplerVoiceFilterParam& param) {
     if (param.index >= voice.rack->maxFilters) APS5_INVALID_ARG_EX;
     if (voice.filters.size() <= param.index) voice.filters.resize(param.index + 1);
     auto& filter = voice.filters[param.index];
-    if (param.type == 0) {
+    const std::uint32_t location = param.location & 0xffu;
+    const std::uint32_t type = param.type & 0xffu;
+    if (type == 0) {
         filter = {};
         return;
     }
-    // knack_pc: location 0 (Knack's pause menu) runs at the same place as 1 (there is no envelope or
-    // distortion stage to come before or after). Types follow the PS Vita NGS filter modes, whose
-    // low-pass 1 AnyPS5 implements: 1 low-pass, 2 high-pass, 3 band-pass (0 dB peak), 4 band-pass
-    // (skirt gain Q), 5 notch, 6 peak, 7 high shelf, 8 low shelf, 9/10 one-pole low/high-pass
-    // (RBJ cookbook biquads). Level scales the low/high/band-pass and notch output; for peak and
-    // shelves it is the band's linear gain.
-    if (param.location > 1 || param.type > 10) {
-        ngs2_stop("NGS2: sampler filter location " + std::to_string(param.location) + " type " + std::to_string(param.type) + " is not implemented");
+    if (param.location > 17 || (type > 10 && type != 0x20)) {
+        ngs2_stop("NGS2: filter location " + std::to_string(location) + " type " + std::to_string(type) + " is not implemented");
     }
-    if (!std::isfinite(param.frequency) || param.frequency < 0.0f || !std::isfinite(param.q) || param.q <= 0.0f || !std::isfinite(param.level) || param.level < 0.0f) {
+    const bool direct = type == 0x20;
+    float directCoefficients[5] = {param.frequency, param.q, param.level, 0.0f, 0.0f};
+    std::memcpy(&directCoefficients[3], &param.reserved[0], sizeof(float));
+    std::memcpy(&directCoefficients[4], &param.reserved[1], sizeof(float));
+    if (direct) {
+        for (float coefficient : directCoefficients) if (!std::isfinite(coefficient)) APS5_INVALID_ARG_EX;
+    } else if (!std::isfinite(param.frequency) || !std::isfinite(param.q) ||
+               !std::isfinite(param.level) || param.frequency < 0.0f || param.q <= 0.0f || param.level < 0.0f) {
         APS5_INVALID_ARG_EX;
     }
-    const double rate = voice.rack->system->option.sample_rate;
+
+    if (!filter.enabled || filter.type != type) filter.history.assign(voice.channels, {});
     filter.enabled = true;
-    filter.bypassMask = param.channel_mask;
+    filter.location = location;
+    filter.type = type;
+    filter.bypassMask = param.channel_mask & 0xffu;
     filter.history.resize(voice.channels);
-    const auto set = [&filter](double b0, double b1, double b2, double a0, double a1, double a2) {
-        filter.b0 = b0 / a0; filter.b1 = b1 / a0; filter.b2 = b2 / a0; filter.a1 = a1 / a0; filter.a2 = a2 / a0;
-    };
-    const double level = param.level;
-    if (param.frequency == 0.0f || param.frequency >= rate * 0.5) {
-        // Out of range: the low-pass passes all (or nothing at 0 Hz), the high-pass the reverse,
-        // the others pass the signal unchanged.
-        const bool passes = param.type == 1 ? param.frequency != 0.0f : param.type == 2 ? param.frequency == 0.0f : true;
-        set(passes ? (param.type <= 2 ? level : 1.0) : 0.0, 0, 0, 1, 0, 0);
+
+    if (direct) {
+        filter.b0 = directCoefficients[0];
+        filter.b1 = directCoefficients[1];
+        filter.b2 = directCoefficients[2];
+        filter.a1 = -directCoefficients[3];
+        filter.a2 = -directCoefficients[4];
         return;
     }
-    const double omega = 2.0 * std::numbers::pi * param.frequency / rate;
-    const double cosine = std::cos(omega), alpha = std::sin(omega) / (2.0 * param.q);
-    const double gain = std::sqrt(std::max(level, 1e-6)); // RBJ "A" for peak and shelves
-    switch (param.type) {
-        case 1: set((1 - cosine) / 2 * level, (1 - cosine) * level, (1 - cosine) / 2 * level, 1 + alpha, -2 * cosine, 1 - alpha); break;
-        case 2: set((1 + cosine) / 2 * level, -(1 + cosine) * level, (1 + cosine) / 2 * level, 1 + alpha, -2 * cosine, 1 - alpha); break;
-        case 3: set(alpha * level, 0, -alpha * level, 1 + alpha, -2 * cosine, 1 - alpha); break;
-        case 4: set(param.q * alpha * level, 0, -param.q * alpha * level, 1 + alpha, -2 * cosine, 1 - alpha); break;
-        case 5: set(level, -2 * cosine * level, level, 1 + alpha, -2 * cosine, 1 - alpha); break;
-        case 6: set(1 + alpha * gain, -2 * cosine, 1 - alpha * gain, 1 + alpha / gain, -2 * cosine, 1 - alpha / gain); break;
-        case 7:
-        case 8: {
-            const double root = 2 * std::sqrt(gain) * alpha, sign = param.type == 7 ? 1.0 : -1.0;
-            const double ap = gain + 1, am = gain - 1;
-            set(gain * (ap + sign * am * cosine + root), -2 * sign * gain * (am + sign * ap * cosine),
-                gain * (ap + sign * am * cosine - root), ap - sign * am * cosine + root, 2 * sign * (am - sign * ap * cosine),
-                ap - sign * am * cosine - root);
+
+    const double rate = voice.rack->system->option.sample_rate;
+    const double normalized = param.frequency / rate;
+    const double omega = (normalized < 0.001 ? 0.0062831853 : std::min(normalized, 0.49987)) * 2.0 * std::numbers::pi;
+    const double q = std::clamp(static_cast<double>(param.q), 0.0001, 32.0);
+    const double sine = std::sin(omega), cosine = std::cos(omega);
+    const double alpha = sine / (2.0 * q);
+    double b0 = 0.0, b1 = 0.0, b2 = 0.0, a0 = 1.0, a1 = 0.0, a2 = 0.0;
+    switch (type) {
+        case 6:
+        case 7: {
+            const double a = std::sqrt(std::max(static_cast<double>(param.level), 0.0001));
+            const double beta = std::sqrt(a) / q * sine;
+            if (type == 6) {
+                b0 = a * ((a + 1.0) - (a - 1.0) * cosine + beta);
+                b1 = 2.0 * a * ((a - 1.0) - (a + 1.0) * cosine);
+                b2 = a * ((a + 1.0) - (a - 1.0) * cosine - beta);
+                a0 = (a + 1.0) + (a - 1.0) * cosine + beta;
+                a1 = -2.0 * ((a - 1.0) + (a + 1.0) * cosine);
+                a2 = (a + 1.0) + (a - 1.0) * cosine - beta;
+            } else {
+                b0 = a * ((a + 1.0) + (a - 1.0) * cosine + beta);
+                b1 = -2.0 * a * ((a - 1.0) + (a + 1.0) * cosine);
+                b2 = a * ((a + 1.0) + (a - 1.0) * cosine - beta);
+                a0 = (a + 1.0) - (a - 1.0) * cosine + beta;
+                a1 = 2.0 * ((a - 1.0) - (a + 1.0) * cosine);
+                a2 = (a + 1.0) - (a - 1.0) * cosine - beta;
+            }
             break;
         }
-        default: { // 9, 10: one pole
-            const double pole = std::exp(-omega);
-            if (param.type == 9) set((1 - pole) * level, 0, 0, 1, -pole, 0);
-            else set((1 + pole) / 2 * level, -(1 + pole) / 2 * level, 0, 1, -pole, 0);
+        case 8: {
+            const double a = std::sqrt(std::max(static_cast<double>(param.level), 0.0001));
+            b0 = 1.0 + alpha * a; b1 = -2.0 * cosine; b2 = 1.0 - alpha * a;
+            a0 = 1.0 + alpha / a; a1 = -2.0 * cosine; a2 = 1.0 - alpha / a;
+            break;
         }
+        case 9:
+            b0 = b1 = sine; b2 = 0.0;
+            a0 = sine + cosine + 1.0; a1 = sine - cosine - 1.0; a2 = 0.0;
+            break;
+        case 10:
+            b0 = cosine + 1.0; b1 = -(cosine + 1.0); b2 = 0.0;
+            a0 = sine + cosine + 1.0; a1 = sine - (cosine + 1.0); a2 = 0.0;
+            break;
+        default:
+            switch (type) {
+                case 2: b0 = b2 = (1.0 + cosine) * 0.5; b1 = -(1.0 + cosine); break;
+                case 3: b0 = sine * 0.5; b1 = 0.0; b2 = -sine * 0.5; break;
+                case 4: b0 = alpha; b1 = 0.0; b2 = -alpha; break;
+                case 5: b0 = 1.0; b1 = -2.0 * cosine; b2 = 1.0; break;
+                default: b0 = b2 = (1.0 - cosine) * 0.5; b1 = 1.0 - cosine; break;
+            }
+            a0 = 1.0 + alpha; a1 = -2.0 * cosine; a2 = 1.0 - alpha;
+            break;
     }
+    filter.b0 = b0 / a0;
+    filter.b1 = b1 / a0;
+    filter.b2 = b2 / a0;
+    filter.a1 = a1 / a0;
+    filter.a2 = a2 / a0;
 }
 
-// knack_pc: PS4 parameters NGS2 here had no counterpart for.
+// PS4 voice parameters retained by the Runtime ABI adapter.
 static constexpr std::uint32_t SAMPLER_VOICE_PARAM_ENVELOPE = 0x10000006;
 static constexpr std::uint32_t SUBMIXER_VOICE_PARAM_COMPRESSOR = 0x20000002;
 static constexpr std::uint32_t SUBMIXER_VOICE_PARAM_FILTER = 0x20000006;
@@ -446,6 +527,11 @@ struct Ps4CompressorParam {
     std::uint32_t flags;
     float threshold, ratio, knee, attack_time, release_time, level;
     std::uint32_t reserved;
+};
+struct Ps4LimiterParam {
+    Ngs2VoiceParamHeader header;
+    std::uint32_t enabled;
+    float threshold;
 };
 
 static void ApplySamplerParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& param) {
@@ -478,8 +564,16 @@ static void ApplySamplerParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& para
             if (count != 0 && envelope.points == nullptr) APS5_INVALID_ARG_EX;
             voice.envelope.forward.assign(envelope.points, envelope.points + envelope.num_forward);
             voice.envelope.release.assign(envelope.points + envelope.num_forward, envelope.points + count);
+            voice.envelope.releasing = false;
+            voice.envelope.segment = 0;
+            voice.envelope.position = 0;
+            voice.envelope.start = 0.0f;
+            voice.envelope.gain = envelope.num_forward == 0 ? 1.0f : 0.0f;
             break;
         }
+        case SCE_NGS2_SAMPLER_VOICE_PARAM_PEAK_METER:
+            // The PS4 implementation accepts this parameter but does not gate peak reporting with it.
+            break;
         default: ngs2_stop("NGS2: sampler voice param " + Ngs2Hex(param.id) + " is not implemented");
     }
 }
@@ -520,18 +614,22 @@ static void ApplyParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& param) {
                 return;
             }
             if (param.id == SUBMIXER_VOICE_PARAM_COMPRESSOR) {
-                // ponytail: no soft knee (Knack sends 0); add it if a game sets one.
                 const auto& c = ParamAs<Ps4CompressorParam>(param);
-                if (!std::isfinite(c.threshold) || c.threshold <= 0.0f || !std::isfinite(c.ratio) || c.ratio < 0.0f ||
-                    !std::isfinite(c.level) || c.attack_time < 0.0f || c.release_time < 0.0f) {
+                if (!std::isfinite(c.threshold) || !std::isfinite(c.ratio) || !std::isfinite(c.knee) ||
+                    !std::isfinite(c.attack_time) || !std::isfinite(c.release_time) || !std::isfinite(c.level)) {
                     APS5_INVALID_ARG_EX;
                 }
-                voice.compressor.enabled = true;
-                voice.compressor.threshold = c.threshold;
-                voice.compressor.ratio = c.ratio;
-                voice.compressor.attack = c.attack_time;
-                voice.compressor.release = c.release_time;
-                voice.compressor.level = c.level;
+                const bool wasEnabled = voice.compressor.enabled;
+                voice.compressor.enabled = (c.flags & 1u) == 0;
+                voice.compressor.rms = (c.flags & 2u) != 0;
+                voice.compressor.linkAllButLfe = (c.flags & 8u) != 0;
+                voice.compressor.threshold = std::clamp(c.threshold, 0.0f, 1.0f);
+                voice.compressor.ratio = std::clamp(c.ratio, 0.0f, 1.0f);
+                voice.compressor.knee = std::clamp(c.knee, 0.0f, 1.0f);
+                voice.compressor.attack = std::clamp(c.attack_time, 0.0f, 10.0f);
+                voice.compressor.release = std::clamp(c.release_time, 0.0f, 10.0f);
+                voice.compressor.level = std::clamp(c.level, 0.0f, 32.0f);
+                if (!wasEnabled && voice.compressor.enabled) voice.compressor.gain.fill(1.0f);
                 return;
             }
             if (param.id != SCE_NGS2_SUBMIXER_VOICE_PARAM_SETUP) break;
@@ -556,6 +654,22 @@ static void ApplyParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& param) {
         case SCE_NGS2_RACK_ID_MASTERING:
             if (param.id == SCE_NGS2_MASTERING_VOICE_PARAM_SETUP) {
                 SetupMixer(voice, ParamAs<Ngs2MasteringVoiceSetupParam>(param).num_io_channels);
+                return;
+            }
+            if (param.id == SCE_NGS2_MASTERING_VOICE_PARAM_LIMITER) {
+                const auto& limiter = ParamAs<Ps4LimiterParam>(param);
+                if (!std::isfinite(limiter.threshold)) APS5_INVALID_ARG_EX;
+                const bool wasEnabled = voice.limiter.enabled;
+                voice.limiter.enabled = limiter.enabled != 0;
+                voice.limiter.rms = false;
+                voice.limiter.linkAllButLfe = false;
+                voice.limiter.threshold = std::clamp(limiter.threshold, 0.0f, 4.0f);
+                voice.limiter.ratio = 0.0f;
+                voice.limiter.knee = 0.0f;
+                voice.limiter.attack = 0.001f;
+                voice.limiter.release = 0.01f;
+                voice.limiter.level = 1.0f;
+                if (!wasEnabled && voice.limiter.enabled) voice.limiter.gain.fill(1.0f);
                 return;
             }
             if (param.id == SCE_NGS2_MASTERING_VOICE_PARAM_GAIN) {
@@ -629,7 +743,8 @@ int APS5_VABI sceNgs2VoiceGetState(uintptr_t voice_handle, Ngs2VoiceState* state
             auto& sampler = *reinterpret_cast<Ngs2SamplerVoiceState*>(state);
             sampler = {};
             sampler.voice_state.state_flags = voice.stateFlags;
-            sampler.envelope_height = 1.0f;
+            sampler.envelope_height = voice.envelope.gain;
+            sampler.peak_height = voice.peak;
             sampler.num_decoded_samples = voice.decodedSamples;
             sampler.decoded_data_size = voice.decodedBytes;
             sampler.user_data = voice.blocks.empty() ? 0 : voice.blocks.front().info.user_data;
@@ -647,6 +762,9 @@ int APS5_VABI sceNgs2VoiceGetState(uintptr_t voice_handle, Ngs2VoiceState* state
             auto& submixer = *reinterpret_cast<Ngs2SubmixerVoiceState*>(state);
             submixer = {};
             submixer.voice_state.state_flags = voice.stateFlags;
+            submixer.envelope_height = 1.0f;
+            submixer.peak_height = voice.peak;
+            submixer.compressor_height = 1.0f;
             return SCE_NGS2_OK;
         }
         case SCE_NGS2_RACK_ID_CUSTOM_SUBMIXER: {
