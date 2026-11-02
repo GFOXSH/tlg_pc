@@ -689,6 +689,9 @@ int APS5_VABI sceNgs2VoiceGetState(uintptr_t voice_handle, Ngs2VoiceState* state
             auto& submixer = *reinterpret_cast<Ngs2SubmixerVoiceState*>(state);
             submixer = {};
             submixer.voice_state.state_flags = voice.stateFlags;
+            submixer.envelope_height = 1.0f;
+            submixer.peak_height = voice.peakHeight;
+            submixer.compressor_height = 1.0f;
             return SCE_NGS2_OK;
         }
         case SCE_NGS2_RACK_ID_CUSTOM_SAMPLER: {
