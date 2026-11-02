@@ -313,6 +313,16 @@ void Ngs2ApplyCustomParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& param) {
         SetupCustomSubmixer(voice, ParamAs<Ngs2CustomSubmixerVoiceSetupParam>(param));
         return;
     }
+    if (param.id == SCE_NGS2_CUSTOM_VOICE_PARAM_CHORUS) {
+        if (rackId != SCE_NGS2_RACK_ID_CUSTOM_SUBMIXER || param.size < sizeof(Ngs2CustomVoiceChorusParam)) APS5_INVALID_ARG_EX;
+        SetChorusParam(voice, ParamAs<Ngs2CustomVoiceChorusParam>(param));
+        return;
+    }
+    if (param.id == SCE_NGS2_CUSTOM_VOICE_PARAM_USER_FX && param.size >= sizeof(Ngs2CustomVoiceDelayParam)) {
+        if (rackId != SCE_NGS2_RACK_ID_CUSTOM_SUBMIXER) APS5_INVALID_ARG_EX;
+        SetDelayParam(voice, ParamAs<Ngs2CustomVoiceDelayParam>(param));
+        return;
+    }
     if ((param.id & ~0x1fu) == SCE_NGS2_CUSTOM_VOICE_PARAM_FILTER) {
         if (rackId != SCE_NGS2_RACK_ID_CUSTOM_SAMPLER && rackId != SCE_NGS2_RACK_ID_CUSTOM_SUBMIXER) {
             ngs2_stop("NGS2: voice param " + Ngs2Hex(param.id) + " belongs to another rack");
@@ -359,7 +369,10 @@ void Ngs2ProcessUserFx(Ngs2Voice& voice, std::uint32_t grain, std::uint32_t samp
     std::vector<float*> channels(voice.channels);
     for (std::uint32_t c = 0; c < voice.channels; c++) channels[c] = voice.samples.data() + static_cast<std::size_t>(c) * grain;
     for (std::size_t m = 0; m < voice.rack->customModuleIds.size(); m++) {
-        if (voice.rack->customModuleIds[m] == SCE_NGS2_CUSTOM_MODULE_ID_USER_FX2) {
+        if (voice.rack->customModuleIds[m] == SCE_NGS2_CUSTOM_MODULE_ID_CHORUS) {
+            ProcessChorus(voice, grain, sampleRate);
+            voice.hasSamples = HasSamples(voice);
+        } else if (voice.rack->customModuleIds[m] == SCE_NGS2_CUSTOM_MODULE_ID_USER_FX2) {
             if (!voice.hasSamples) continue;
             auto& fx = voice.userFx[m];
             const auto& module = voice.rack->userFx[m];
@@ -370,7 +383,10 @@ void Ngs2ProcessUserFx(Ngs2Voice& voice, std::uint32_t grain, std::uint32_t samp
             if (result != SCE_NGS2_OK) ngs2_stop("NGS2: the UserFx2 process handler failed with " + std::to_string(result));
             fx.flags = 0;
         } else if (voice.rack->customModuleIds[m] == SCE_NGS2_CUSTOM_MODULE_ID_USER_FX) {
-            if (m < voice.customUserFx.size() && voice.customUserFx[m].handler != nullptr) {
+            if (voice.delay.configured) {
+                ProcessDelay(voice, grain);
+                voice.hasSamples = HasSamples(voice);
+            } else if (m < voice.customUserFx.size() && voice.customUserFx[m].handler != nullptr) {
                 auto& fx = voice.customUserFx[m];
                 Ngs2UserFxProcessContext context{channels.data(), fx.data[0], fx.data[1], fx.data[2],
                                                  fx.flags, voice.channels, grain, sampleRate};
