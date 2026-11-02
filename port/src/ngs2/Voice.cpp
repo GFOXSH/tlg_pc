@@ -201,7 +201,7 @@ static void ApplyCommonParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& param
 // As vgmstream's decode_hevag (src/coding/psv_decoder.c); history is kept unclamped.
 static constexpr std::uint32_t WAVEFORM_TYPE_VAG = 0x1c;
 
-static void DecodeVagFrame(const std::uint8_t* data, std::array<std::int32_t, 4>& history,
+static void DecodeVagFrame(const std::uint8_t* data, std::array<float, 4>& history,
                            std::array<std::int16_t, 28>& output) {
     std::uint32_t index = static_cast<std::uint32_t>(data[1] & 0xf0) | (data[0] >> 4);
     if (index > 127) index = 0;
@@ -209,14 +209,14 @@ static void DecodeVagFrame(const std::uint8_t* data, std::array<std::int32_t, 4>
     const int flag = data[1] & 15;
     const float* coefficients = HEVAG_COEFS[index];
     for (int i = 0; i < 28; ++i) {
-        std::int32_t sample = 0;
-        if (flag < 7) {
+        float sample = 0.0f;
+        if (flag != 7) {
             const std::int32_t code = ((static_cast<std::int32_t>(data[2 + i / 2] >> (i % 2 * 4)) & 15) ^ 8) - 8;
-            sample = (code * (1 << 12)) >> shift;
-            sample += static_cast<std::int32_t>(history[0] * coefficients[0] + history[1] * coefficients[1] +
-                                                history[2] * coefficients[2] + history[3] * coefficients[3]);
+            sample = static_cast<float>((code * (1 << 12)) >> shift);
+            sample += history[0] * coefficients[0] + history[1] * coefficients[1] +
+                      history[2] * coefficients[2] + history[3] * coefficients[3];
         }
-        output[i] = static_cast<std::int16_t>(std::clamp(sample, -32768, 32767));
+        output[i] = static_cast<std::int16_t>(std::clamp(sample, -32768.0f, 32767.0f));
         history[3] = history[2];
         history[2] = history[1];
         history[1] = history[0];
@@ -233,7 +233,7 @@ static std::vector<std::int16_t> DecodeVag(const std::uint8_t* data, std::uint64
     const std::uint64_t groups = bytes / groupBytes;
     if (groups > std::numeric_limits<std::size_t>::max() / (28 * channels)) APS5_INVALID_ARG_EX;
     out.reserve(static_cast<std::size_t>(groups) * 28 * channels);
-    std::array<std::array<std::int32_t, 4>, NGS2_MAX_CHANNELS> history{};
+    std::array<std::array<float, 4>, NGS2_MAX_CHANNELS> history{};
     std::array<std::array<std::int16_t, 28>, NGS2_MAX_CHANNELS> decoded{};
     for (std::uint64_t group = 0; group < groups; group++) {
         const auto* source = data + group * groupBytes;
