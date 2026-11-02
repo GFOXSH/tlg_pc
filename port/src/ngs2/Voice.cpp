@@ -71,6 +71,10 @@ void Ngs2Voice::ResetSetup() {
     filters.clear();
     envelope = {};
     compressor = {};
+    chorus = {};
+    delay = {};
+    limiter = {};
+    peakHeight = 0.0f;
     fbwLevel = 1.0f;
     lfeLevel = 1.0f;
     channels = 0;
@@ -196,24 +200,46 @@ static void ApplyCommonParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& param
 // As vgmstream's decode_hevag (src/coding/psv_decoder.c); history is kept unclamped.
 static constexpr std::uint32_t WAVEFORM_TYPE_VAG = 0x1c;
 
-static std::vector<std::int16_t> DecodeVag(const std::uint8_t* data, std::uint64_t bytes) {
+static void DecodeVagFrame(const std::uint8_t* data, std::array<std::int32_t, 4>& history,
+                           std::array<std::int16_t, 28>& output) {
+    const std::uint32_t index = (static_cast<std::uint32_t>(data[1] & 0xf0) | (data[0] >> 4)) & 0x7f;
+    const int shift = data[0] & 15;
+    const int flag = data[1] & 15;
+    const float* coefficients = HEVAG_COEFS[index];
+    for (int i = 0; i < 28; ++i) {
+        std::int32_t sample = 0;
+        if (flag < 7) {
+            const std::int32_t code = ((static_cast<std::int32_t>(data[2 + i / 2] >> (i % 2 * 4)) & 15) ^ 8) - 8;
+            sample = (code * (1 << 12)) >> shift;
+            sample += static_cast<std::int32_t>(history[0] * coefficients[0] + history[1] * coefficients[1] +
+                                                history[2] * coefficients[2] + history[3] * coefficients[3]);
+        }
+        output[i] = static_cast<std::int16_t>(std::clamp(sample, -32768, 32767));
+        history[3] = history[2];
+        history[2] = history[1];
+        history[1] = history[0];
+        history[0] = sample;
+    }
+}
+
+// HE-VAG stores one 16-byte predictor frame per channel in each interleaved frame group.
+// Predictor history is independent per channel; the resulting PCM remains interleaved.
+static std::vector<std::int16_t> DecodeVag(const std::uint8_t* data, std::uint64_t bytes, std::uint32_t channels) {
     std::vector<std::int16_t> out;
-    out.reserve(bytes / 16 * 28);
-    std::int32_t h1 = 0, h2 = 0, h3 = 0, h4 = 0;
-    for (std::uint64_t at = 0; at + 16 <= bytes; at += 16) {
-        std::uint32_t index = (data[at + 1] & 0xf0) | (data[at] >> 4);
-        if (index > 127) index = 0;
-        const int shift = data[at] & 15, flag = data[at + 1] & 15;
-        const float* c = HEVAG_COEFS[index];
-        for (int i = 0; i < 28; ++i) {
-            std::int32_t sample = 0;
-            if (flag < 7) {
-                const std::int32_t code = ((static_cast<std::int32_t>(data[at + 2 + i / 2] >> (i % 2 * 4)) & 15) ^ 8) - 8;
-                sample = (code * (1 << 12)) >> shift;
-                sample += static_cast<std::int32_t>(h1 * c[0] + h2 * c[1] + h3 * c[2] + h4 * c[3]);
-            }
-            out.push_back(static_cast<std::int16_t>(std::clamp(sample, -32768, 32767)));
-            h4 = h3; h3 = h2; h2 = h1; h1 = sample;
+    if (channels == 0 || channels > NGS2_MAX_CHANNELS) APS5_INVALID_ARG_EX;
+    const std::uint64_t groupBytes = static_cast<std::uint64_t>(channels) * 16;
+    const std::uint64_t groups = bytes / groupBytes;
+    if (groups > std::numeric_limits<std::size_t>::max() / (28 * channels)) APS5_INVALID_ARG_EX;
+    out.reserve(static_cast<std::size_t>(groups) * 28 * channels);
+    std::array<std::array<std::int32_t, 4>, NGS2_MAX_CHANNELS> history{};
+    std::array<std::array<std::int16_t, 28>, NGS2_MAX_CHANNELS> decoded{};
+    for (std::uint64_t group = 0; group < groups; group++) {
+        const auto* source = data + group * groupBytes;
+        for (std::uint32_t channel = 0; channel < channels; channel++) {
+            DecodeVagFrame(source + channel * 16, history[channel], decoded[channel]);
+        }
+        for (std::uint32_t sample = 0; sample < 28; sample++) {
+            for (std::uint32_t channel = 0; channel < channels; channel++) out.push_back(decoded[channel][sample]);
         }
     }
     return out;
@@ -228,7 +254,6 @@ static void SetupSampler(Ngs2Voice& voice, const Ngs2WaveformFormat& format) {
     }
     if (format.frame_offset != 0 || format.frame_margin != 0) ngs2_stop("NGS2: waveform frame offset and margin are not implemented");
     if (format.num_channels == 0 || format.num_channels > NGS2_MAX_CHANNELS || format.sample_rate == 0) APS5_INVALID_ARG_EX;
-    if (format.waveform_type == WAVEFORM_TYPE_VAG && format.num_channels != 1) ngs2_stop("NGS2: multichannel VAG is not implemented");
     voice.channels = format.num_channels;
     voice.sampleRate = format.sample_rate;
     voice.vag = format.waveform_type == WAVEFORM_TYPE_VAG;
@@ -285,7 +310,7 @@ static void AddWaveformBlocks(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBl
             const auto& vag = param.blocks[i];
             if (vag.num_samples == 0 && vag.data_size == 0) continue;
             auto decoded = std::make_shared<const std::vector<std::int16_t>>(
-                DecodeVag(static_cast<const std::uint8_t*>(param.data) + vag.data_offset, vag.data_size));
+                DecodeVag(static_cast<const std::uint8_t*>(param.data) + vag.data_offset, vag.data_size, voice.channels));
             // GOW3_NGS2_DUMP_VAG=<folder> (diagnostics): the first 40 blocks, raw and decoded.
             static const char* dump = std::getenv("GOW3_NGS2_DUMP_VAG");
             static int dumped = 0;
@@ -303,7 +328,8 @@ static void AddWaveformBlocks(Ngs2Voice& voice, const Ngs2SamplerVoiceWaveformBl
             auto block = vag;
             block.data_offset = 0;
             block.data_size = decoded->size() * sizeof(std::int16_t);
-            if (block.num_samples == 0 || static_cast<std::uint64_t>(block.num_skip_samples) + block.num_samples > decoded->size()) {
+            const std::uint64_t decodedFrames = decoded->size() / voice.channels;
+            if (block.num_samples == 0 || static_cast<std::uint64_t>(block.num_skip_samples) + block.num_samples > decodedFrames) {
                 ngs2_stop("NGS2: VAG block " + std::to_string(i) + " does not fit its data");
             }
             Ngs2Block added{reinterpret_cast<const std::uint8_t*>(decoded->data()), block};
@@ -429,6 +455,13 @@ void Ngs2SetFilter(Ngs2Voice& voice, const Ngs2SamplerVoiceFilterParam& param) {
 
 // knack_pc: PS4 parameters NGS2 here had no counterpart for.
 static constexpr std::uint32_t SAMPLER_VOICE_PARAM_ENVELOPE = 0x10000006;
+
+struct Ps4MasteringLimiterParam {
+    Ngs2VoiceParamHeader header;
+    std::uint32_t enabled;
+    float threshold;
+};
+static_assert(sizeof(Ps4MasteringLimiterParam) == 16);
 static constexpr std::uint32_t SUBMIXER_VOICE_PARAM_COMPRESSOR = 0x20000002;
 static constexpr std::uint32_t SUBMIXER_VOICE_PARAM_FILTER = 0x20000006;
 struct Ps4EnvelopeParam {
@@ -467,6 +500,9 @@ static void ApplySamplerParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& para
             break;
         }
         case SCE_NGS2_SAMPLER_VOICE_PARAM_FILTER: Ngs2SetFilter(voice, ParamAs<Ngs2SamplerVoiceFilterParam>(param)); break;
+        case SCE_NGS2_SAMPLER_VOICE_PARAM_PEAK_METER:
+            // The meter is sampled continuously; VoiceGetState returns the latest post-DSP peak.
+            break;
         case SAMPLER_VOICE_PARAM_ENVELOPE: {
             const auto& envelope = ParamAs<Ps4EnvelopeParam>(param);
             const std::uint32_t count = envelope.num_forward + envelope.num_release;
@@ -561,6 +597,16 @@ static void ApplyParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& param) {
                 voice.outputId = ParamAs<Ngs2MasteringVoiceOutputParam>(param).output_id;
                 return;
             }
+            if (param.id == SCE_NGS2_MASTERING_VOICE_PARAM_LIMITER) {
+                const auto& limiter = ParamAs<Ps4MasteringLimiterParam>(param);
+                if (!std::isfinite(limiter.threshold)) APS5_INVALID_ARG_EX;
+                const bool wasEnabled = voice.limiter.enabled;
+                voice.limiter.enabled = limiter.enabled != 0;
+                voice.limiter.threshold = std::clamp(limiter.threshold, 0.0f, 4.0f);
+                if (!wasEnabled && voice.limiter.enabled) voice.limiter.gain.fill(1.0f);
+                if (!voice.limiter.enabled) voice.limiter.gain.fill(1.0f);
+                return;
+            }
             break;
         default: break;
     }
@@ -621,7 +667,8 @@ int APS5_VABI sceNgs2VoiceGetState(uintptr_t voice_handle, Ngs2VoiceState* state
             auto& sampler = *reinterpret_cast<Ngs2SamplerVoiceState*>(state);
             sampler = {};
             sampler.voice_state.state_flags = voice.stateFlags;
-            sampler.envelope_height = 1.0f;
+            sampler.envelope_height = voice.envelope.gain;
+            sampler.peak_height = voice.peakHeight;
             sampler.num_decoded_samples = voice.decodedSamples;
             sampler.decoded_data_size = voice.decodedBytes;
             sampler.user_data = voice.blocks.empty() ? 0 : voice.blocks.front().info.user_data;
@@ -634,7 +681,8 @@ int APS5_VABI sceNgs2VoiceGetState(uintptr_t voice_handle, Ngs2VoiceState* state
             state->state_flags = voice.stateFlags;
             return SCE_NGS2_OK;
         }
-        case SCE_NGS2_RACK_ID_SUBMIXER: {
+        case SCE_NGS2_RACK_ID_SUBMIXER:
+        case SCE_NGS2_RACK_ID_CUSTOM_SUBMIXER: {
             if (state_size != sizeof(Ngs2SubmixerVoiceState)) return SCE_NGS2_ERROR_INVALID_OUT_SIZE;
             auto& submixer = *reinterpret_cast<Ngs2SubmixerVoiceState*>(state);
             submixer = {};
