@@ -116,6 +116,56 @@ struct Ngs2Compressor {
     float detector = 0.0f;
 };
 
+// Built-in modules used by TLG's 0x4002 custom-submixer racks. The sample histories live
+// on the voice, not in the user-FX callback slots (module 0x1d has both ABI uses).
+struct Ngs2ChorusState {
+    bool configured = false;
+    std::uint32_t mask = 0;
+    std::uint32_t phases = 1;
+    float gain = 1.0f;
+    float delayMs = 10.0f;
+    float rateHz = 0.5f;
+    float depth = 0.0f;
+    float feedback = 0.0f;
+    float dry = 1.0f;
+    float wet = 0.0f;
+    float phase = 0.0f;
+    std::uint32_t write = 0;
+    std::vector<float> line;
+};
+
+struct Ngs2DelayState {
+    bool configured = false;
+    float dry = 1.0f;
+    float wet = 0.0f;
+    float gain = 1.0f;
+    float feedback = 0.0f;
+    float lowpassHz = 0.0f;
+    std::uint32_t taps = 1;
+    std::uint32_t flags = 0;
+    std::uint32_t mask = 0;
+    std::uint32_t length = 0;
+    std::uint32_t write = 0;
+    std::uint32_t channels = 0;
+    float lowpassCoefficient = 0.0f;
+    std::array<float, 8> tapLevel{};
+    std::array<float, 8> tapMs{};
+    std::array<float, 8> inputGain{};
+    std::array<float, 8> lowpassState{};
+    std::array<std::uint32_t, 8> tapDelay{};
+    std::vector<float> line;
+    std::vector<float> work;
+};
+
+struct Ngs2LimiterState {
+    bool enabled = false;
+    float threshold = 1.0f;
+    std::uint32_t sampleRate = 0;
+    float attackCoefficient = 0.0f;
+    float releaseCoefficient = 0.0f;
+    std::array<float, NGS2_MAX_CHANNELS> gain{1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+};
+
 struct Ngs2Port {
     Ngs2Voice* dest = nullptr;
     float volume = 1.0f;
@@ -161,6 +211,10 @@ struct Ngs2Voice {
     std::vector<Ngs2Filter> filters;
     Ngs2Envelope envelope;
     Ngs2Compressor compressor;
+    Ngs2ChorusState chorus;
+    Ngs2DelayState delay;
+    Ngs2LimiterState limiter;
+    float peakHeight = 0.0f;
     std::uint32_t outputId = 0;
     float fbwLevel = 1.0f;
     float lfeLevel = 1.0f;
