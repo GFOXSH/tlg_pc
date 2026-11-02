@@ -92,6 +92,8 @@ std::size_t RackTailWords(std::uint32_t rackId) {
         case SCE_NGS2_RACK_ID_SUBMIXER: return 5;
         case SCE_NGS2_RACK_ID_MASTERING:
         case SCE_NGS2_RACK_ID_REVERB: return 2;
+        case SCE_NGS2_RACK_ID_CUSTOM_SUBMIXER:
+            return (sizeof(Ngs2CustomSubmixerRackOption) - sizeof(Ngs2RackOption)) / sizeof(std::uint32_t);
         default: ngs2_stop("NGS2: PS4 rack id " + Ngs2Hex(rackId) + " is not translated");
     }
 }
@@ -155,7 +157,13 @@ bool Implemented(std::uint32_t id) {
         case SCE_NGS2_SUBMIXER_VOICE_PARAM_USER_FX: case SCE_NGS2_REVERB_VOICE_PARAM_SETUP:
         case SCE_NGS2_REVERB_VOICE_PARAM_I3DL2: case SCE_NGS2_MASTERING_VOICE_PARAM_SETUP:
         case SCE_NGS2_MASTERING_VOICE_PARAM_GAIN: case SCE_NGS2_MASTERING_VOICE_PARAM_OUTPUT:
-        case 0x10000006: case 0x20000002: case 0x20000006: return true; // envelope, compressor, submixer filter
+        case 0x10000006: case SCE_NGS2_SAMPLER_VOICE_PARAM_PEAK_METER:
+        case 0x20000002: case 0x20000006:
+        case SCE_NGS2_MASTERING_VOICE_PARAM_LIMITER:
+        case SCE_NGS2_CUSTOM_SUBMIXER_VOICE_PARAM_SETUP:
+        case SCE_NGS2_CUSTOM_VOICE_PARAM_FILTER: case SCE_NGS2_CUSTOM_VOICE_PARAM_CHORUS:
+        case SCE_NGS2_CUSTOM_VOICE_PARAM_USER_FX: case SCE_NGS2_CUSTOM_VOICE_PARAM_USER_FX2:
+            return true; // envelope, peak meter, compressor, limiter, custom rack and effects
         default: return false;
     }
 }
