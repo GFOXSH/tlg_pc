@@ -56,20 +56,22 @@ Com a janela do jogo em foco, o mouse fica preso e gira a câmera. **Esc** solta
 
 | Ação no jogo | Botão do PS4 | Teclado e mouse |
 |---|---|---|
+| Agachar | X | Ctrl esquerdo |
+| Pular | Triângulo | Espaço |
+| Interagir | Círculo | E ou clique esquerdo |
+| Esquivar / arremessar | Quadrado | Shift esquerdo |
+| Encontrar Trico | L1 | Q |
+| Chamar Trico / comando | R1 | F ou clique direito |
+| Dica | L3 | Tab |
+| Inventário | Direcional | Setas; roda para baixo/cima = esquerda/direita |
 | Andar | Analógico esquerdo | W A S D |
-| Câmera | Analógico direito | Mouse (ou as setas) |
-| Pular | X | Espaço |
-| Agarrar, segurar | Triângulo | Clique esquerdo ou Q |
-| Chamar o Trico | R1 | Clique direito ou 3 |
-| | Quadrado | E ou clique do meio |
-| | Círculo | Shift esquerdo |
-| | L1 / L2 / R2 | 1 / R / F |
-| | L3 / R3 | Z / C |
-| | Direcional | I J K L |
-| Menu | Options | Enter |
-| Modo foto / pausa | Touchpad (esquerda / direita) | Tab / Backspace |
+| Câmera | Analógico direito | Mouse ou I J K L |
+| Pausa | Options / Menu | Enter |
 
 - No launcher, a caixa **Controles** liga o mouse, muda a sensibilidade e inverte o eixo Y. **Teclas e botões do mouse…** remapeia cada botão: clique em *Definir* e aperte a tecla ou o botão do mouse (os botões laterais e a roda também servem). Vale na próxima vez que o jogo abrir.
+- Para deslizar o touchpad sem controle com touchpad, segure Backspace e use I J K L.
+- L2, R2, R3 e cliques no touchpad não têm teclas padrão; continuam disponíveis para remapeamento.
+- Para deslizar o touchpad sem controle com touchpad, segure Backspace e use I J K L.
 - No jogo, a aba **Controles** do menu do port (Insert) ajusta sensibilidade, eixo Y, suavização, aceleração e anti-zona morta na hora.
 
 ### Onde ficam as coisas
@@ -134,20 +136,20 @@ While the game window has focus, it takes the mouse and the mouse turns the came
 
 | In game | PS4 button | Keyboard and mouse |
 |---|---|---|
+| Crouch | Cross | Left Ctrl |
+| Jump | Triangle | Space |
+| Interact | Circle | E or left click |
+| Dash / throw | Square | Left Shift |
+| Find Trico | L1 | Q |
+| Call Trico / command | R1 | F or right click |
+| Hint | L3 | Tab |
+| Inventory | D-pad | Arrow keys; wheel down/up = left/right |
 | Move | Left stick | W A S D |
-| Camera | Right stick | Mouse (or the arrow keys) |
-| Jump | Cross | Space |
-| Grab, hold on | Triangle | Left click or Q |
-| Call Trico | R1 | Right click or 3 |
-| | Square | E or middle click |
-| | Circle | Left Shift |
-| | L1 / L2 / R2 | 1 / R / F |
-| | L3 / R3 | Z / C |
-| | D-pad | I J K L |
-| Menu | Options | Enter |
-| Photo mode / pause | Touchpad (left / right) | Tab / Backspace |
+| Camera | Right stick | Mouse or I J K L |
+| Pause | Options / Menu | Enter |
 
-- In the launcher, the **Controls** box turns the mouse on or off, sets its sensitivity and inverts the Y axis. **Keyboard and mouse buttons…** remaps each button: click *Set* and press the key or mouse button (the side buttons and the wheel work too). It applies at the next start.
+- In the launcher, the **Controls** box turns the mouse on or off, sets its sensitivity and inverts the Y axis. **Keyboard and mouse buttons…** remaps each button: click *Set* and press the key or mouse button (the side buttons and the wheel work too). It applies at the next start. Backspace + IJKL swipes the touchpad.
+- L2, R2, R3 and touchpad clicks have no keyboard defaults; they remain available for remapping.
 - In game, the **Controls** tab of the port's menu (Insert) changes sensitivity, Y axis, smoothing, acceleration and anti-dead zone at once.
 
 ### Where things are

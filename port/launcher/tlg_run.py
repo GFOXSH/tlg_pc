@@ -111,9 +111,10 @@ applied_garlic_extra = 0
 
 # Keyboard and mouse defaults of src/runtime_pad.c, in its key_map syntax ('|': several).
 DEFAULT_KEYS = {
-    'cross': 'Space', 'circle': 'Left Shift', 'square': 'E|Mouse Middle', 'triangle': 'Q|Mouse Left',
-    'l1': '1', 'r1': '3|Mouse Right', 'l2': 'R', 'r2': 'F', 'l3': 'Z', 'r3': 'C', 'options': 'Return',
-    'touchpad_left': 'Tab', 'touchpad_right': 'Backspace', 'up': 'I', 'down': 'K', 'left': 'J', 'right': 'L',
+    'cross': 'Left Ctrl', 'circle': 'E|Mouse Left', 'square': 'Left Shift', 'triangle': 'Space',
+    'l1': 'Q', 'r1': 'F|Mouse Right', 'l2': '', 'r2': '', 'l3': 'Tab', 'r3': '', 'options': 'Return',
+    'touchpad_left': '', 'touchpad_right': '',
+    'up': 'Up', 'down': 'Down', 'left': 'Left|Wheel Down', 'right': 'Right|Wheel Up',
 }
 # Synced with tlg.ini both ways: the in-game menu saves them there.
 INI_KEYS = ('mouse_enabled', 'mouse_sensitivity', 'mouse_invert_y', 'key_map')
