@@ -547,16 +547,18 @@ void ControlsTab() {
     }
     ImGui::SeparatorText(TL("Keyboard and mouse layout", "Layout de teclado e mouse"));
     if (BeginRows("##layout")) {
-        InfoRow(TL("Move / camera", "Andar / câmera"), TL("WASD / mouse or arrow keys", "WASD / mouse ou setas"));
-        InfoRow(TL("Jump (Cross)", "Pular (X)"), TL("Space", "Espaço"));
-        InfoRow(TL("Grab, hold on (Triangle)", "Agarrar, segurar (Triângulo)"), TL("Left click or Q", "Clique esquerdo ou Q"));
-        InfoRow(TL("Call Trico (R1)", "Chamar o Trico (R1)"), TL("Right click or 3", "Clique direito ou 3"));
-        InfoRow(TL("Square / Circle", "Quadrado / Círculo"), TL("E or middle click / Left Shift", "E ou clique do meio / Shift esquerdo"));
-        InfoRow("L1 / L2 / R2", "1 / R / F");
-        InfoRow("L3 / R3", "Z / C");
-        InfoRow(TL("D-pad", "Direcional"), "I J K L");
-        InfoRow("Options", "Enter");
-        InfoRow(TL("Touchpad (photo / pause)", "Touchpad (foto / pausa)"), "Tab / Backspace");
+        InfoRow(TL("Crouch (Cross)", "Agachar (X)"), TL("Left Ctrl", "Ctrl esquerdo"));
+        InfoRow(TL("Jump (Triangle)", "Pular (Triângulo)"), TL("Space", "Espaço"));
+        InfoRow(TL("Interact (Circle)", "Interagir (Círculo)"), TL("E or left click", "E ou clique esquerdo"));
+        InfoRow(TL("Dash / throw (Square)", "Esquivar / arremessar (Quadrado)"), TL("Left Shift", "Shift esquerdo"));
+        InfoRow(TL("Find Trico (L1)", "Encontrar Trico (L1)"), "Q");
+        InfoRow(TL("Call Trico / command (R1)", "Chamar Trico / comando (R1)"), TL("F or right click", "F ou clique direito"));
+        InfoRow(TL("Hint (L3)", "Dica (L3)"), "Tab");
+        InfoRow(TL("D-pad inventory", "Inventário no direcional"),
+                TL("Arrow keys; wheel down/up = left/right", "Setas; roda para baixo/cima = esquerda/direita"));
+        InfoRow(TL("Move / camera", "Andar / câmera"), TL("Left stick: WASD; right stick: mouse or IJKL",
+                                                           "Analógico esquerdo: WASD; direito: mouse ou IJKL"));
+        InfoRow(TL("Pause (Options / Menu)", "Pausa (Options / Menu)"), TL("Enter", "Enter"));
         InfoRow(TL("Release the mouse", "Soltar o mouse"), "Esc");
         const char* env = std::getenv("TLG_KEY_MAP");
         const std::string remap = env && env[0] ? std::string(env) : s.key_map;

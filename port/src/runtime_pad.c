@@ -3,15 +3,16 @@
  *
  * Default keyboard layout (TLG_KEY_MAP or tlg.ini key_map changes the buttons, see
  * apply_button_map):
- *   WASD left stick, arrow keys right stick, Space Cross (jump), LShift Circle, E Square,
- *   Q Triangle (grab), 1 L1, 3 R1 (call Trico), R L2, F R2, Z L3, C R3,
- *   Enter Options, Tab left touchpad (photo mode), Backspace right touchpad (pause menu),
- *   IJKL d-pad (I up, K down, J left, L right).
- *   T / G tilt and Y shakes the simulated motion sensor (sample_motion); Tab + arrows swipes
- *   the touchpad (apply_swipe).
+ *   WASD left stick, IJKL right stick, Ctrl Cross (crouch), Space Triangle (jump),
+ *   E/left mouse Circle (interact), LShift Square (dash/throw), Q L1 (find Trico),
+ *   F/right mouse R1 (call Trico/command), Tab L3 (hint), Enter Options (pause),
+ *   arrow keys D-pad,
+ *   wheel down/up D-pad left/right.
+ *   L2, R2, R3 and touchpad clicks have no keyboard defaults. T / G tilt and Y shakes
+ *   the simulated motion sensor (sample_motion); Backspace + IJKL swipes the touchpad.
  * Mouse (while the window has it, see tlggpu_mouse_take; Esc releases it, a click takes it back):
- *   motion turns the camera (right stick, src/mouse_stick.h), left button Triangle (grab and
- *   hold on), right button R1 (call Trico), middle button Square. X1/X2 and the wheel are free
+ *   motion turns the camera (right stick, src/mouse_stick.h), left button Circle (interact),
+ *   right button R1 (call Trico). X1/X2 and unused wheel directions are free
  *   for TLG_KEY_MAP ("Mouse X1", "Wheel Up", ...). */
 #define _GNU_SOURCE
 #include "runtime.h"
@@ -94,12 +95,11 @@ static uint16_t touch_axis(float v, int max) {
     return (uint16_t)(v<=0.0f ? 0 : v>=1.0f ? max : (int)(v*max+0.5f));
 }
 
-/* A click without a touch surface (Back/View, Tab, Backspace, the pad file) is played like a
+/* A click without a touch surface (Back/View, Backspace/Delete, the pad file) is played like a
  * finger: the touch is reported CLICK_LEAD_US before the button, the button stays at least
- * CLICK_HOLD_US, and the touch lingers CLICK_TAIL_US after the release. God of War III opens
- * photo mode on the release of a left click with the finger still down, and ignores a touch
- * that comes and goes with the button. The side is chosen when the click starts and kept: the
- * right source with L1 held is a left click (photo mode on pads without a touchpad). */
+ * CLICK_HOLD_US, and the touch lingers CLICK_TAIL_US after the release. Some games need the
+ * touch to remain down when the click is released. The side is chosen when the click starts and
+ * kept: the right source with L1 held is a left click. */
 enum { CLICK_LEAD_US=50000, CLICK_HOLD_US=50000, CLICK_TAIL_US=100000 };
 static struct { int side; uint64_t pressed, released; } click={-1,0,0};
 static void play_click(PadData *d) {
@@ -177,7 +177,7 @@ static SDL_Gamepad *current_gamepad(void) {
  * '|' gives it several ("triangle=Q|Mouse Left") and "none" leaves it without any. The keyboard
  * map also takes the mouse: Mouse Left/Middle/Right/X1/X2, Wheel Up/Down/Left/Right.
  * touchpad_left (alias touchpad) and touchpad_right are the two sides of the touchpad click:
- * photo mode and the pause menu. Back/View (Share on a DualSense) is the right click, and with
+ *   left/right touchpad clicks. Back/View (Share on a DualSense) is the right click, and with
  * L1 held the left one. Sticks, triggers, the real touchpad click and the overlay shortcuts are
  * not remapped. */
 static const struct { const char *name; uint32_t ps; } ps_names[]={
@@ -208,13 +208,13 @@ static ButtonMap pad_map={{
     {SDL_GAMEPAD_BUTTON_DPAD_LEFT,BTN_LEFT}, {SDL_GAMEPAD_BUTTON_DPAD_RIGHT,BTN_RIGHT},
 },15};
 static ButtonMap key_map={{
-    {SDL_SCANCODE_SPACE,BTN_CROSS}, {SDL_SCANCODE_LSHIFT,BTN_CIRCLE}, {SDL_SCANCODE_E,BTN_SQUARE},
-    {SDL_SCANCODE_Q,BTN_TRIANGLE}, {SDL_SCANCODE_1,BTN_L1}, {SDL_SCANCODE_3,BTN_R1},
-    {SDL_SCANCODE_R,BTN_L2}, {SDL_SCANCODE_F,BTN_R2}, {SDL_SCANCODE_Z,BTN_L3}, {SDL_SCANCODE_C,BTN_R3},
-    {SDL_SCANCODE_RETURN,BTN_OPTIONS}, {SDL_SCANCODE_TAB,CLICK_LEFT}, {SDL_SCANCODE_BACKSPACE,CLICK_RIGHT},
-    {SDL_SCANCODE_I,BTN_UP}, {SDL_SCANCODE_K,BTN_DOWN}, {SDL_SCANCODE_J,BTN_LEFT}, {SDL_SCANCODE_L,BTN_RIGHT},
-    {MOUSE_LEFT,BTN_TRIANGLE}, {MOUSE_RIGHT,BTN_R1}, {MOUSE_MIDDLE,BTN_SQUARE},
-},20};
+    {SDL_SCANCODE_LCTRL,BTN_CROSS}, {SDL_SCANCODE_E,BTN_CIRCLE}, {SDL_SCANCODE_LSHIFT,BTN_SQUARE},
+    {SDL_SCANCODE_SPACE,BTN_TRIANGLE}, {SDL_SCANCODE_Q,BTN_L1}, {SDL_SCANCODE_F,BTN_R1},
+    {SDL_SCANCODE_TAB,BTN_L3}, {SDL_SCANCODE_RETURN,BTN_OPTIONS},
+    {SDL_SCANCODE_UP,BTN_UP}, {SDL_SCANCODE_DOWN,BTN_DOWN},
+    {SDL_SCANCODE_LEFT,BTN_LEFT}, {SDL_SCANCODE_RIGHT,BTN_RIGHT},
+    {WHEEL_DOWN,BTN_LEFT}, {WHEEL_UP,BTN_RIGHT}, {MOUSE_LEFT,BTN_CIRCLE}, {MOUSE_RIGHT,BTN_R1},
+},16};
 
 static char *trim(char *text) {
     while (*text==' ' || *text=='\t') ++text;
@@ -408,7 +408,7 @@ static void sample_motion(PadData *d, SDL_Gamepad *g, const bool *k) {
     d->orientation[0]=motion.q.x; d->orientation[1]=motion.q.y; d->orientation[2]=motion.q.z; d->orientation[3]=motion.q.w;
 }
 /* Touchpad swipes for controllers without a touchpad ("Open Door": swipe right): hold View/
- * Select/- (gamepad) or Tab (keyboard) and push the right stick (arrow keys): a finger moves
+ * Select/- (gamepad) or Backspace (keyboard) and push the right stick (IJKL): a finger moves
  * from the middle of the pad toward that side. A quick tap without moving still clicks. */
 static struct { int active; } swipe;
 static void apply_swipe(PadData *d, SDL_Gamepad *g, const bool *k) {
@@ -419,12 +419,12 @@ static void apply_swipe(PadData *d, SDL_Gamepad *g, const bool *k) {
         x=(float)SDL_GetGamepadAxis(g,SDL_GAMEPAD_AXIS_RIGHTX)/32767.f;
         y=(float)SDL_GetGamepadAxis(g,SDL_GAMEPAD_AXIS_RIGHTY)/32767.f;
     }
-    if (k && k[SDL_SCANCODE_TAB]) {
+    if (k && k[SDL_SCANCODE_BACKSPACE]) {
         held=1;
-        if (k[SDL_SCANCODE_LEFT]) x=-1;
-        if (k[SDL_SCANCODE_RIGHT]) x=1;
-        if (k[SDL_SCANCODE_UP]) y=-1;
-        if (k[SDL_SCANCODE_DOWN]) y=1;
+        if (k[SDL_SCANCODE_J]) x=-1;
+        if (k[SDL_SCANCODE_L]) x=1;
+        if (k[SDL_SCANCODE_I]) y=-1;
+        if (k[SDL_SCANCODE_K]) y=1;
     }
     if (!held) { swipe.active=0; return; }
     if (!swipe.active && x*x+y*y<0.09f) return; /* not moved yet: still a click */
@@ -537,8 +537,8 @@ static void sample_host(PadData *d) {
     if (!k) return;
     key_axis(&d->left_x,k[SDL_SCANCODE_A],k[SDL_SCANCODE_D]);
     key_axis(&d->left_y,k[SDL_SCANCODE_W],k[SDL_SCANCODE_S]);
-    key_axis(&d->right_x,k[SDL_SCANCODE_LEFT],k[SDL_SCANCODE_RIGHT]);
-    key_axis(&d->right_y,k[SDL_SCANCODE_UP],k[SDL_SCANCODE_DOWN]);
+    key_axis(&d->right_x,k[SDL_SCANCODE_J],k[SDL_SCANCODE_L]);
+    key_axis(&d->right_y,k[SDL_SCANCODE_I],k[SDL_SCANCODE_K]);
     const uint32_t mouse=sample_mouse(d); /* adds to the right stick */
     for (size_t i=0;i<key_map.count;++i) {
         const int source=key_map.entries[i].source;
@@ -546,7 +546,7 @@ static void sample_host(PadData *d) {
                                              : source<SDL_SCANCODE_COUNT && k[source];
         if (down) d->buttons|=key_map.entries[i].ps;
     }
-    apply_swipe(d,g,k); /* after the key map: Tab+arrows swipe instead of clicking */
+    apply_swipe(d,g,k); /* after the key map: Backspace+IJKL swipes instead of clicking */
     if (d->buttons & BTN_L2) d->l2=255;
     if (d->buttons & BTN_R2) d->r2=255;
 }
