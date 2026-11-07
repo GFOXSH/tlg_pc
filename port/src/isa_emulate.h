@@ -38,7 +38,7 @@ uint64_t isa_defined_flags(uint8_t kind);
 int isa_kind_is_sse4a(uint8_t kind);
 /* Executes an EXTRQ/INSERTQ site (AMD APM vol. 4) on xmm: xmm[0], xmm[1] = destination low and high
  * qwords, xmm[2], xmm[3] = source register (unused by EXTRQ imm). Writes xmm[0] and xmm[1] only.
- * Cases the APM leaves undefined follow AMD hardware (Zen 3, checked by tests/test_isa_sse4a.c):
+ * Cases the APM leaves undefined follow AMD hardware (Zen 3):
  * the destination's high qword is zeroed, and a field with index + length > 64 is cut at bit 63. */
 void ABI isa_emulate_sse4a(const IsaSite *site, uint64_t xmm[4]);
 

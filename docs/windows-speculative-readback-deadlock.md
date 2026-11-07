@@ -28,26 +28,7 @@ trampolim `tlg_longjmp` existente. O worker abandona o preparo daquele draw e
 libera o lock. Apenas acessos sem ponto de recuperação entram no rastreamento e
 readback da GPU. Os readbacks precisos e os workers permanecem habilitados.
 
-## Regressão
-
-`test_windows_fault_recovery.py` extrai o handler de produção e o compila com
-`compat_win.c`. Usa páginas Windows realmente protegidas e verifica:
-
-- 100 falhas especulativas recuperadas sem chamar o callback da GPU;
-- limpeza do ponto de recuperação em TLS;
-- falhas normais de leitura e escrita ainda encaminhadas ao rastreamento da GPU.
-
-O mesmo teste **falha com o handler anterior**, código 99, e **passa com a
-correção**. O callback simulado falha imediatamente no caminho proibido para não
-deixar o teste preso no deadlock. A etapa foi incluída no CI Windows.
-
-```powershell
-python -m unittest discover -s port/tests -p test_windows_fault_recovery.py -v
-```
-
-É necessário um compilador MSYS2 CLANG64 no PATH ou em `TLG_TEST_CLANG`.
-Os 12 testes da interface também passaram. O motor completo foi recompilado com
-Clang/MSYS2 e suas DLLs foram empacotadas a partir da árvore de imports.
+O motor completo foi recompilado com Clang/MSYS2 e suas DLLs foram empacotadas a partir da árvore de imports.
 A instalação original e os saves do usuário foram preservados.
 
 ## Validação em execução

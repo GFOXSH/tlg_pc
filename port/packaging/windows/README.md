@@ -72,5 +72,4 @@ and the presented image of the next frame to `TLG_DUMP_DIR` (raw 32-bit pixels),
 works for menus and movies.
 
 Not ported: the watchdog/`--timeout` thread dumps (Linux signals), userfaultfd tracking
-(`TLG_UFFD`), MangoHud, PGO (GCC flags) and
-the `tests/` programs (several use Linux-only APIs).
+(`TLG_UFFD`), MangoHud and PGO (GCC flags).
