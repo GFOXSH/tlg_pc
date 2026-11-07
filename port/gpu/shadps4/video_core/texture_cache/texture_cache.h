@@ -137,6 +137,8 @@ public:
         ImageId image_id{};
         const void* backing = nullptr;
         ImageViewId view_id{};
+        u64 image_uid = 0;
+        ImageViewInfo view_info{};
     };
 
     /// Retrieves an image view with the properties of the specified image id.
