@@ -226,23 +226,34 @@ Image::Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime_,
 
 Image::~Image() = default;
 
-ImageView& Image::FindView(const ImageViewInfo& view_info, bool ensure_guest_samples) {
+ImageView& Image::FindView(const ImageViewInfo& view_info, bool ensure_guest_samples,
+                           ImageViewId* out_view_id) {
     if (ensure_guest_samples && backing->num_samples > 1 != info.num_samples > 1) {
         runtime->SetBackingSamples(this, info.num_samples);
     }
     const auto& view_infos = backing->image_view_infos;
     if (backing->last_view < view_infos.size() && view_infos[backing->last_view] == view_info) {
-        return (*slot_image_views)[backing->image_view_ids[backing->last_view]];
+        const auto view_id = backing->image_view_ids[backing->last_view];
+        if (out_view_id) {
+            *out_view_id = view_id;
+        }
+        return (*slot_image_views)[view_id];
     }
     const auto it = std::ranges::find(view_infos, view_info);
     if (it != view_infos.end()) {
         backing->last_view = static_cast<u32>(std::distance(view_infos.begin(), it));
         const auto view_id = backing->image_view_ids[backing->last_view];
+        if (out_view_id) {
+            *out_view_id = view_id;
+        }
         return (*slot_image_views)[view_id];
     }
     const auto view_id = slot_image_views->insert(runtime->GetInstance(), view_info, *this);
     backing->image_view_infos.emplace_back(view_info);
     backing->image_view_ids.emplace_back(view_id);
+    if (out_view_id) {
+        *out_view_id = view_id;
+    }
     return (*slot_image_views)[view_id];
 }
 

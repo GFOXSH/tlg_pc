@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <xxhash.h>
 #include "video_core/amdgpu/liverpool.h"
 
@@ -1054,16 +1055,20 @@ ImageView& TextureCache::FindTexture(ImageId image_id, const ImageDesc& desc, Vi
         PublishAliasWrite(image_id);
     }
     if (memo && !TlgToggle::Disabled(TlgToggle::TextureViewMemo)) {
-        if (memo->image_id == image_id && memo->backing == image.backing && memo->view_id) {
-            return slot_image_views[memo->view_id];
+        if (memo->image_id == image_id && memo->image_uid == image.image_uid &&
+            memo->view_info == desc.view_info && memo->backing == image.backing && memo->view_id) {
+            const auto& view_ids = image.backing->image_view_ids;
+            if (std::ranges::find(view_ids, memo->view_id) != view_ids.end()) {
+                return slot_image_views[memo->view_id];
+            }
         }
-        ImageView& view = image.FindView(desc.view_info);
-        const auto& ids = image.backing->image_view_ids;
-        const u32 last = image.backing->last_view;
+        ImageViewId view_id{};
+        ImageView& view = image.FindView(desc.view_info, true, &view_id);
         memo->image_id = image_id;
+        memo->image_uid = image.image_uid;
         memo->backing = image.backing;
-        memo->view_id = last < ids.size() && &slot_image_views[ids[last]] == &view ? ids[last]
-                                                                                    : ids.back();
+        memo->view_info = desc.view_info;
+        memo->view_id = view_id;
         return view;
     }
     return image.FindView(desc.view_info);
