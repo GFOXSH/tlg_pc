@@ -768,7 +768,6 @@ static const RuntimeExport exports[]={
     {"sceKernelBatchMap",batch_map}, {"sceKernelBatchMap2",batch_map2},
 };
 uintptr_t runtime_memory_resolve(const char *name) {
-    /* Direct-memory NIDs are exercised by test_runtime.c before names are loaded. */
     if (!strcmp(name, "pO96TwzOm5E#libkernel")) return (uintptr_t)direct_size;
     if (!strcmp(name, "rTXw65xmLIA#libkernel")) return (uintptr_t)direct_allocate;
     if (!strcmp(name, "L-Q3LEjIbgA#libkernel")) return (uintptr_t)direct_map;
@@ -978,4 +977,3 @@ void runtime_memory_report(void) {
     printf("Runtime: flexible maps=%zu, in use=%" PRIu64 ", protects=%zu, queries=%zu, regions=%zu\n",
            flexible_maps, flexible_bytes, protects, queries, vma_count);
 }
-

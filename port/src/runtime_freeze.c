@@ -109,7 +109,7 @@ static void add(Text *t, const char *format, ...) {
     }
 }
 
-/* ---- Wait description (unit-tested) ---- */
+/* ---- Wait description ---- */
 static const RuntimeThreadInfo *find_record(const RuntimeThreadInfo *threads, size_t count, const void *record) {
     for (size_t i = 0; i < count; ++i) if (threads[i].record && threads[i].record == record) return &threads[i];
     return NULL;

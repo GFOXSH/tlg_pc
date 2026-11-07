@@ -207,7 +207,7 @@ uintptr_t runtime_resolve(const char *name, int is_data) {
     if (!strcmp(name, "8G2LB+A3rzg#libc")) return (uintptr_t)guest_atexit;
     if (!strcmp(name, "tsvEmnenz48#libc")) return (uintptr_t)guest_cxa_atexit;
     if (!strcmp(name, "uMei1W9uyNo#libc")) return (uintptr_t)guest_libc_exit;
-    /* Not imported by the current eboot, exposed for ABI tests/future use. */
+    /* Not imported by the current eboot; retained for ABI compatibility. */
     if (!strcmp(name, "H2e8t5ScQGc#libc")) return (uintptr_t)guest_finalize;
     if (!strcmp(name, "3GPpjQdAMTw#libc")) return (uintptr_t)guard_acquire;
     if (!strcmp(name, "9rAeANT2tyE#libc")) return (uintptr_t)guard_release;

@@ -2079,9 +2079,3 @@ uintptr_t runtime_ngs2_resolve(const char *name) {
     if (runtime_ngs2_native()) return 0;
     return RUNTIME_LOOKUP(exports, name);
 }
-/* Direct access by symbol name for the offline tests (tests/test_ngs2.c). */
-void *runtime_ngs2_function(const char *symbol) {
-    for (size_t i = 0; i < sizeof(exports) / sizeof(*exports); ++i)
-        if (!strcmp(exports[i].name, symbol)) return exports[i].function;
-    return NULL;
-}

@@ -8,8 +8,7 @@
  *   3. smoothing: the deflection moves toward the target with an exponential filter, the same
  *      per second at any sample rate (0 none, 0.9 heavy);
  *   4. once the mouse stops the deflection decays to exactly 0 (below MOUSE_STICK_REST): no
- *      drift; a moving mouse is lifted past the game's dead zone by `deadzone` (anti-dead zone).
- * Kept free of SDL and the runtime so tests/test_mouse_stick.c checks the math alone. */
+ *      drift; a moving mouse is lifted past the game's dead zone by `deadzone` (anti-dead zone). */
 #ifndef TLG_MOUSE_STICK_H
 #define TLG_MOUSE_STICK_H
 #include <math.h>

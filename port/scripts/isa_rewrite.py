@@ -186,16 +186,6 @@ def summary(sites):
             f'{modes.count(MODE_INT3)} int3, {modes.count(MODE_UNSUPPORTED)} unsupported')
 
 
-def fixture_code():
-    """Code behind tests/data/isa_fixture.bin, loaded by the C loader test."""
-    return b''.join(bytes.fromhex(h) for h in (
-        'c4e270f3c9',              # blsr ecx, ecx                 JMP
-        '0f38f108', '90',          # movbe [rax], ecx; nop         JMP_RELOCATE
-        'c4e270f7050c000000',      # bextr eax, [rip+0xc], ecx     JMP
-        '66f30fbdc1',              # lzcnt ax, cx                  JMP
-        'f3480fbcc1',              # tzcnt rax, rcx                JMP
-        '0f38f108', 'ebfe',        # movbe [rax], ecx; jmp $       INT3
-        'c3'))                     # ret
 
 
 def isa_bytes(sites):

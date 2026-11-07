@@ -136,7 +136,7 @@ Estimativa: etapas 1–3 em 2–3 semanas; 4–5 em mais 2–4.
 
 ## 5. Implementação (etapas 1–3, 14/10/2026)
 
-`port/src/runtime_ngs2.c` (branch `feat/ngs2-hle`), sem nada de jogo dentro. Escolha: `TLG_NGS2=native` usa o `.sprx`; qualquer outro valor (o launcher manda `hle` quando o `.sprx` falta ou está desmarcado) usa o mixer próprio. Teste offline: `tests/test_ngs2.c` (`build.sh --test`).
+`port/src/runtime_ngs2.c` (branch `feat/ngs2-hle`), sem nada de jogo dentro. Escolha: `TLG_NGS2=native` usa o `.sprx`; qualquer outro valor (o launcher manda `hle` quando o `.sprx` falta ou está desmarcado) usa o mixer próprio.
 
 Achados novos [C]:
 - **Fim de voz no sndx** (TLG `0x1a85b0`, a função que imprime `VOICE_FINISHED`): depois de `VoiceGetState(h, &st, 0x30)`, a voz é dada como terminada **só quando o bit 0 (INUSE) de `stateFlags` cai**. `(flags & 0x22) == 2` (PLAYING sem EMPTY) marca "tocou"; PLAYING com **EMPTY (0x20)** conta falta de dados (stream atrasado). `numDecodedSamples`/`decodedDataSize` (st+0x10) e `envelopeHeight`/`peakHeight` são copiados para a voz do sndx.
@@ -159,7 +159,7 @@ O módulo nativo monta cada voz como uma cadeia de "módulos" com parâmetros co
 - **Custom:** chorus (`0x40001c00`: 1–4 fases em cascata, atraso, LFO senoidal, profundidade, realimentação, dry/wet) e delay multi-tap (`0x40001d00`: dry, wet, ganho, realimentação normalizada pela soma dos taps, passa-baixa de 1 polo, até 8 taps, por canal por padrão). Nos exemplos do TLG o chorus tem wet 0 (só passa o sinal).
 - **Envelope:** curvas 0 linear, 1 `(10^x−1)/9`, 2 `log10(1+9x)`, 3 S (cosseno), 4 arco-seno, 5 seno/cosseno de um quarto; um envelope que termina a parte "forward" em 0 encerra a voz.
 
-Validação: `tests/test_ngs2.c` mede resposta dos filtros, curva do compressor, limiter, LFE, ganho, T60 do reverb (1,0 e 2,5 s), tempo do delay e do chorus e as curvas do envelope; custo de um grafo do tamanho do TLG ≈ 1,6 ms por render de 256 amostras (5,3 ms de áudio). `TLG_NGS2_WAV=<arquivo>` grava a mixagem; `tools/ngs2_compare.py a.wav b.wav --align` alinha as duas gravações (a tela de título toca os mesmos streams) e dá diferença de nível e correlação por canal. Com o mixer das etapas 1–3, a tela de título já batia com o nativo: correlação 0,999, −0,4 dB.
+`TLG_NGS2_WAV=<arquivo>` grava a mixagem; `tools/ngs2_compare.py a.wav b.wav --align` alinha as duas gravações (a tela de título toca os mesmos streams) e dá diferença de nível e correlação por canal. Com o mixer das etapas 1–3, a tela de título já batia com o nativo: correlação 0,999, −0,4 dB.
 
 ## 6. Como repetir o rastreio
 
