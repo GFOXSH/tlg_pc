@@ -132,7 +132,8 @@ struct Image {
         depth_uid = {};
     }
 
-    ImageView& FindView(const ImageViewInfo& view_info, bool ensure_guest_samples = true);
+    ImageView& FindView(const ImageViewInfo& view_info, bool ensure_guest_samples = true,
+                        ImageViewId* out_view_id = nullptr);
 
     using Barriers = boost::container::small_vector<vk::ImageMemoryBarrier2, 32>;
     void GetBarriers(Barriers& out_barriers, vk::ImageLayout dst_layout, vk::AccessFlags2 dst_mask,
