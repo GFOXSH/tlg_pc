@@ -1365,6 +1365,18 @@ int main(int argc, char **argv) {
             int result=((ModuleInit)(image+modules[m].init))(0,NULL,NULL);
             printf("Module %" PRIu64 " initializer returned %d\n",m,result);
             if (result) fail("module initializer failed");
+			
+            /* W^X Enforcement */
+            for (uint64_t i = 0; i < ns; ++i) {
+                if (segments[i].address >= modules[m].base &&
+                    segments[i].address < modules[m].base + modules[m].size) {
+
+                    if ((segments[i].flags & 1) && (segments[i].flags & 2)) {
+                        unsigned new_flags = (unsigned)(segments[i].flags & ~2);
+                        protect(image + segments[i].address, round_page(segments[i].size), new_flags);
+                    }
+                }
+            }
         }
     }
     {   /* TLG_FREEZE_REPORT_SECONDS (default 10, 0 = off): no new frame for that long writes
