@@ -25,7 +25,7 @@ if [[ ! -x out/pyenv/Scripts/python.exe ]]; then
 fi
 out/pyenv/Scripts/python.exe -m pip install -q --disable-pip-version-check pyinstaller iced-x86==1.21.0
 hidden=()
-for module in argparse base64 collections hashlib json re shutil struct tempfile xml.etree.ElementTree \
+for module in argparse base64 collections hashlib json lzma zlib re shutil struct tempfile xml.etree.ElementTree \
               urllib.request runpy ctypes.wintypes msvcrt iced_x86; do
     hidden+=(--hidden-import "$module")
 done
