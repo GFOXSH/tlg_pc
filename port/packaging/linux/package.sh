@@ -15,7 +15,7 @@ out/pyenv/bin/python -m pip install -q --disable-pip-version-check pyinstaller i
 # The scripts run inside the executable (--script): the standard modules they import come along,
 # and iced-x86 for scripts/isa_rewrite.py (CPUs without MOVBE/BMI1/LZCNT/SSE4A).
 hidden=()
-for module in argparse base64 collections hashlib json re shutil struct tempfile xml.etree.ElementTree \
+for module in argparse base64 collections hashlib json lzma zlib re shutil struct tempfile xml.etree.ElementTree \
               urllib.request runpy iced_x86; do
     hidden+=(--hidden-import "$module")
 done
