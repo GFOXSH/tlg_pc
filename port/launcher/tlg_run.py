@@ -74,6 +74,11 @@ READBACK_FLAGS = (
     ('async_fences', 'TLG_ASYNC_FENCES', False),
 )
 
+DEFAULT_STICK_KEYS = {
+    'walk_up': 'W', 'walk_left': 'A', 'walk_down': 'S', 'walk_right': 'D',
+    'camera_up': 'I', 'camera_left': 'J', 'camera_down': 'K', 'camera_right': 'L',
+}
+
 DEFAULT_SETTINGS = {
     # Source tree: the merged game view. Package: the player picks the game folder.
     'game_dir': '' if FROZEN else str(REPO_DIR / 'game' / 'CUSA03627'),
@@ -88,6 +93,7 @@ DEFAULT_SETTINGS = {
     'mouse_sensitivity': 1.0,
     'mouse_invert_y': False,
     'key_map': {},                 # PS4 button -> 'Key|Mouse Left' (empty: the default)
+    'stick_keys': dict(DEFAULT_STICK_KEYS),
     'frame_rate': '30',            # 30 | 60 | unlocked (scripts/tlg_patches.py; TLG_FPS wins)
     'resolution': '1080p',         # 360p | 720p | 1080p | 1440p | 4k (checked EBOOT patch)
     'draw_pipe': 'auto',           # auto | on | off (TLG_DRAW_PIPE; Advanced)
@@ -104,12 +110,12 @@ applied_resolution = '1080p'
 # MiB added to the game's Garlic GPU heap by scripts/tlg_patches.py.
 applied_garlic_extra = 0
 
-# Keyboard and mouse defaults of src/runtime_pad.c, in its key_map syntax ('|': several).
+# Keyboard defaults of src/runtime_pad.c, in its key_map syntax ('|': several).
 DEFAULT_KEYS = {
-    'cross': 'Left Ctrl', 'circle': 'E|Mouse Left', 'square': 'Left Shift', 'triangle': 'Space',
-    'l1': 'Q', 'r1': 'F|Mouse Right', 'l2': '', 'r2': '', 'l3': 'Tab', 'r3': '', 'options': 'Return',
+    'cross': 'Left Ctrl', 'circle': 'E', 'square': 'Left Shift', 'triangle': 'Space',
+    'l1': 'Q', 'r1': 'F', 'l2': '', 'r2': '', 'l3': 'Tab', 'r3': '', 'options': 'Return',
     'touchpad_left': '', 'touchpad_right': '',
-    'up': 'Up', 'down': 'Down', 'left': 'Left|Wheel Down', 'right': 'Right|Wheel Up',
+    'up': 'Up', 'down': 'Down', 'left': 'Left', 'right': 'Right',
 }
 # Synced with tlg.ini both ways: the in-game menu saves them there.
 INI_KEYS = ('mouse_enabled', 'mouse_sensitivity', 'mouse_invert_y', 'key_map')
@@ -117,8 +123,24 @@ INI_KEYS = ('mouse_enabled', 'mouse_sensitivity', 'mouse_invert_y', 'key_map')
 
 def key_map_spec(mapping):
     """The tlg.ini key_map value: only the buttons that differ from the defaults."""
-    return ','.join(f'{button}={value.strip()}' for button, value in mapping.items()
-                    if button in DEFAULT_KEYS and value.strip() and value.strip() != DEFAULT_KEYS[button])
+    entries = []
+    for button, value in keyboard_key_map(mapping).items():
+        if value != DEFAULT_KEYS[button]:
+            entries.append(f'{button}={value}')
+    return ','.join(entries)
+
+def keyboard_key_map(mapping):
+    """Keep only configurable keyboard bindings; mouse bindings are fixed in the runtime."""
+    clean = {}
+    for button, value in mapping.items():
+        if button not in DEFAULT_KEYS or not isinstance(value, str):
+            continue
+        bindings = [part.strip() for part in value.split('|') if part.strip()]
+        keyboard = '|'.join(part for part in bindings
+                            if not part.lower().startswith(('mouse ', 'wheel ')))
+        if keyboard:
+            clean[button] = keyboard
+    return clean
 
 
 def parse_key_map(spec):
@@ -127,7 +149,7 @@ def parse_key_map(spec):
         button, eq, value = entry.partition('=')
         if eq and button.strip().lower() in DEFAULT_KEYS:
             mapping[button.strip().lower()] = value.strip()
-    return mapping
+    return keyboard_key_map(mapping)
 
 
 def read_ini(path):
@@ -169,6 +191,7 @@ def load_settings():
             settings['mouse_sensitivity'] = min(5.0, max(0.1, float(ini['mouse_sensitivity'])))
     except ValueError:
         pass
+    settings['key_map'] = keyboard_key_map(settings.get('key_map') or {})
     if 'key_map' in ini:
         settings['key_map'] = parse_key_map(ini['key_map'])
     return settings
@@ -433,6 +456,13 @@ def build_env(settings, extra=None):
         if setting_key in settings and bool(settings[setting_key]) != default and env_key not in os.environ:
             env[env_key] = '1' if settings[setting_key] else '0'
     env['TLG_GC_BUDGET_MB'] = os.environ.get('TLG_GC_BUDGET_MB', str(int(settings['vram_budget_mb'])))
+    stick_keys = dict(DEFAULT_STICK_KEYS)
+    configured_stick_keys = settings.get('stick_keys')
+    if isinstance(configured_stick_keys, dict):
+        stick_keys.update({key: value for key, value in configured_stick_keys.items()
+                           if key in DEFAULT_STICK_KEYS and isinstance(value, str) and value.strip()})
+    for action, key in stick_keys.items():
+        env.setdefault(f'TLG_{action.upper()}', key)
     env['TLG_LANGUAGE'] = os.environ.get('TLG_LANGUAGE', str(
         game_languages(settings.get('game_dir')).get(settings['game_language'], 1)))
     if settings.get('ui_language', 'auto') != 'auto':
