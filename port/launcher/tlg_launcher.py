@@ -3633,7 +3633,7 @@ TEXT = {
     'color_saturation': ('Saturation (1 = unchanged)', 'Saturação (1 = sem alteração)'),
     'color_gamma': ('Gamma (1 = unchanged)', 'Gama (1 = sem alteração)'),
     'audio': ('Audio', 'Áudio'),
-    'native_audio': ('Native audio (libSceNgs2.sprx from your console)', 'Áudio nativo (libSceNgs2.sprx do seu console)'),
+    'native_audio': ('Native audio (libSceNgs2.sprx or .ngspak from your console)', 'Áudio nativo (libSceNgs2.sprx ou .ngspak do seu console)'),
     'controls': ('Controls', 'Controles'),
     'mouse_enabled': ('Mouse turns the camera', 'Mouse gira a câmera'),
     'mouse_invert_y': ('Invert mouse Y axis', 'Inverter eixo Y do mouse'),
