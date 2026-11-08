@@ -98,6 +98,8 @@ def patch_fs_loads(image, ph, base):
 
 
 def link(game, out, module_names=DEFAULT_MODULES):
+    if any(Path(name.replace('\\', '/')).suffix.casefold() == '.sprx' for name in module_names):
+        raise ValueError('External SPRX modules are not loadable; use the bundled libSceNGS2.bin')
     main = module(game / 'eboot.bin')
     raw = (out / 'boot.bin').read_bytes()
     magic, size, entry, ns, nr, ni, flags = unpack('<8s6Q', raw, 0)
@@ -131,7 +133,10 @@ def link(game, out, module_names=DEFAULT_MODULES):
     fs_patched = patch_fs_loads(image, main['ph'], 0)
     tls_module = 2
     for filename in module_names:
-        m = module(game / 'sce_module' / filename)
+        module_path = Path(filename)
+        if not module_path.is_absolute():
+            module_path = game / 'sce_module' / module_path
+        m = module(module_path)
         loads = [p for p in m['ph'] if p['type'] in (1, 0x61000010)]
         modsize = max(p['vaddr'] + p['memsz'] for p in loads)
         if base + modsize > 512 * 1024 * 1024:
@@ -206,8 +211,8 @@ def link(game, out, module_names=DEFAULT_MODULES):
             candidates = by_nid.get((identity[0], 'libc'), [])
             found = candidates[0] if len(candidates) == 1 else None
         if not found and identity:
-            # tlg: system modules from the console firmware (libSceNgs2.sprx) export newer library
-            # versions than the game imports; same NID and library name is the same function.
+            # Some firmware modules export a different library version than the game imports.
+            # A unique match by NID and library name is still the same function.
             candidates = by_nid.get((identity[0], identity[1][0]), [])
             found = candidates[0] if len(candidates) == 1 else None
         if found:

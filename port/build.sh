@@ -2,6 +2,12 @@
 set -euo pipefail
 cd -- "$(dirname -- "$0")"
 mkdir -p out
+ngs2_image=third_party/ngs2/libSceNGS2.bin
+if [[ ! -f $ngs2_image ]]; then
+    echo "Missing required NGS2 module: $ngs2_image" >&2
+    exit 1
+fi
+cp -- "$ngs2_image" out/libSceNGS2.bin
 # Windows: MSYS2 CLANG64 (packages in packaging/windows/README.md). The GPU library is static
 # there and CMake links tlg-probe.exe as well; no PGO (GCC-only flags), LTO off by default.
 case $(uname -s) in

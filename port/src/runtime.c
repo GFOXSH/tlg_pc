@@ -253,8 +253,6 @@ uintptr_t runtime_resolve(const char *name, int is_data) {
     if (save) return save;
     uintptr_t file = runtime_file_resolve(name);
     if (file) return file;
-    uintptr_t ngs2 = runtime_ngs2_resolve(name);
-    if (ngs2) return ngs2;
     uintptr_t tlg = runtime_tlg_resolve(name);
     if (tlg) return tlg;
     return tlggpu_resolve(name);

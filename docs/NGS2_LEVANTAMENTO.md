@@ -2,6 +2,8 @@
 
 13/10/2026. Base para reimplementar do zero o `libSceNgs2` (mixer de software da Sony), para os ports não precisarem mais do `libSceNgs2.sprx` do firmware (TLG #11 / GR2 #8).
 
+> Histórico: o mixer HLE e o trace descritos aqui foram removidos. O runtime atual carrega a imagem ELF customizada `libSceNGS2.bin` pelo linker de módulos; SPRX externo não é carregado.
+
 Fontes:
 - **Rastreio dinâmico** do NGS2 nativo nos dois jogos (`TLG_NGS2_TRACE`, ver abaixo): GR2 ~4 min e TLG ~5 min, do título até o gameplay. São 4,5 milhões de `VoiceControl` no TLG e 110 mil no GR2.
 - **Estudo estático:** TLG em [tlg_pc/analysis/03_audio.md](tlg_pc/analysis/03_audio.md) e GR2 em [gr2_pc/analysis/03_audio.md](gr2_pc/analysis/03_audio.md).

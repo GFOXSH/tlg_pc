@@ -2,13 +2,14 @@
 # Builds dist/tlg-windows-x86_64.zip after `bash build.sh` in an MSYS2 CLANG64 shell:
 # "The Last Guardian.exe" (the launcher, frozen with PyInstaller so players need no Python),
 # "Play The Last Guardian.exe" (starts the game with the saved settings), out/tlg-probe.exe with
-# the CLANG64 DLLs it loads, the preparation scripts and the player README. No game or console
-# file may ship. Freezing uses a Windows Python 3.10+ (python.org or actions/setup-python;
+# the CLANG64 DLLs it loads, the preparation scripts, the player README and the custom NGS2 ELF
+# image loaded by the module linker. No game dump or firmware SPRX is staged. Freezing uses
+# a Windows Python 3.10+ (python.org or actions/setup-python;
 # WINPYTHON overrides) and a private venv in out/pyenv.
 set -euo pipefail
 cd -- "$(dirname -- "$0")/../.."
 source ./msys2-env.sh
-[[ -f out/tlg-probe.exe && -f out/tlg-gpu-capabilities.exe && -f out/tlg-play.exe ]] || { echo 'Build first: bash build.sh' >&2; exit 1; }
+[[ -f out/tlg-probe.exe && -f out/tlg-gpu-capabilities.exe && -f out/tlg-play.exe && -f out/libSceNGS2.bin ]] || { echo 'Build first: bash build.sh' >&2; exit 1; }
 name=${TLG_PACKAGE_NAME:-tlg-windows-x86_64}
 
 python=${WINPYTHON:-}
@@ -36,7 +37,7 @@ out/pyenv/Scripts/python.exe -m PyInstaller --noconfirm --clean --log-level WARN
 
 dest=out/stage/$name
 rm -rf -- out/stage
-mkdir -p "$dest/out" "$dest/launcher" "$dest/system_lib"
+mkdir -p "$dest/out" "$dest/launcher"
 cp -r "out/pyi-dist/The Last Guardian/." "$dest/"
 llvm-strip -o "$dest/Play The Last Guardian.exe" out/tlg-play.exe
 cp launcher/tlg.ico launcher/tlg.png "$dest/launcher/"
@@ -44,6 +45,7 @@ cp launcher/tlg.ico launcher/tlg.png "$dest/launcher/"
 for exe in tlg-probe.exe tlg-gpu-capabilities.exe; do
     llvm-strip --strip-debug -o "$dest/out/$exe" "out/$exe"
 done
+cp out/libSceNGS2.bin "$dest/out/"
 # Every DLL the executables load from the CLANG64 tree (SDL3, FFmpeg, Vulkan loader, ...), found by
 # walking the import tables against /clang64/bin itself. ldd resolved them through PATH, where the
 # runner's Strawberry Perl has its own libiconv-2.dll: that one was filtered out as "not CLANG64"
@@ -68,8 +70,6 @@ echo "Packaged $(find "$dest/out" -maxdepth 1 -iname '*.dll' | wc -l) DLLs from 
 cp -r scripts "$dest/"
 find "$dest" -name __pycache__ -prune -exec rm -r {} +
 cp LICENSE packaging/README-player.md "$dest/"
-printf '%s\r\n' 'Coloque aqui o libSceNgs2.sprx do firmware do seu PS4 (/system/common/lib) para ter som.' \
-    'Put libSceNgs2.sprx from your PS4 firmware (/system/common/lib) here for audio.' > "$dest/system_lib/LEIA-ME.txt"
 bash packaging/check_package.sh "$dest"
 mkdir -p dist
 rm -f "dist/$name.zip"

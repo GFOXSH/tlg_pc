@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# Stops packaging when the staged folder holds a file that must not ship: game files, console
-# firmware, official art, or anything a player made (saves, caches, settings, logs).
+# Stops packaging when the staged folder holds loose game/firmware files, official art, or
+# player-created data (saves, caches, settings, logs); the bundled NGS2 ELF image is a runtime input.
 set -euo pipefail
 dest=$1
+if [[ ! -f $dest/out/libSceNGS2.bin ]]; then
+    echo "Package is missing out/libSceNGS2.bin" >&2
+    exit 1
+fi
 forbidden=$(find "$dest" \( -iname eboot.bin -o -iname sce_module -o -iname sce_sys -o -iname savedata \
     -o -iname '*.psarc' -o -iname '*.sprx' -o -iname '*.prx' -o -iname '*.pkg' -o -iname '*.sfo' \
     -o -iname icon0.png -o -iname 'pic0.png' -o -iname 'pic1.png' -o -iname 'playgo-chunk*' \
@@ -13,4 +17,4 @@ if [[ -n $forbidden ]]; then
     echo "$forbidden" >&2
     exit 1
 fi
-echo "Package check: no game, firmware or player files."
+echo "Package check: no loose game/firmware assets or player files."
