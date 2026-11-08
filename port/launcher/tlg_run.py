@@ -203,8 +203,15 @@ def check_game(game_dir):
 
 
 def ngs2_module(settings):
-    path = Path(settings['system_lib_dir']) / 'libSceNgs2.sprx'
-    return path if settings.get('native_audio', True) and path.is_file() else None
+    """Prefer the original firmware SPRX; otherwise accept the lossless NGS2SPK v1 container."""
+    if not settings.get('native_audio', True):
+        return None
+    folder = Path(settings['system_lib_dir'])
+    for name in ('libSceNgs2.sprx', 'libSceNgs2.ngspak', 'libSceNgs2_compact.ngspak'):
+        path = folder / name
+        if path.is_file():
+            return path
+    return None
 
 
 def read_ini(path):
@@ -552,7 +559,7 @@ def main(argv=None):
             print(f'{"Compile primeiro" if kind == "not_built" else "Faltando"}: {detail}', file=sys.stderr)
         return 1
     notes = []
-    prepare(settings, log=lambda line: notes.append(line) if line.startswith('Frame rate') else None)
+    prepare(settings, log=lambda line: notes.append(line) if line.startswith(('Frame rate', 'NGS2 pack:')) else None)
     process, log = launch(settings, seconds)
     print(f'Rodando (log: {log})', flush=True)
     with open(log, 'w', encoding='utf-8') as out:
