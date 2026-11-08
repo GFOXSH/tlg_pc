@@ -61,10 +61,9 @@ void runtime_content_report(void);
 typedef struct { const char *name; void *function; } RuntimeExport;
 #define RUNTIME_LOOKUP(table, nid) runtime_lookup(table, sizeof(table)/sizeof(*(table)), nid)
 const char *runtime_symbol(const char *nid);
-uintptr_t runtime_ngs2_trace_bind(const char *nid, uintptr_t address);
-/* libSceNgs2 (runtime_ngs2.c): the built-in mixer, unless TLG_NGS2=native links the firmware module. */
-int runtime_ngs2_native(void);
+/* Bundled libSceNgs2 V5: imports are resolved during image loading and DT_INIT starts before eboot. */
 uintptr_t runtime_ngs2_resolve(const char *name);
+int runtime_ngs2_start(void);
 uintptr_t runtime_lookup(const RuntimeExport *table, size_t count, const char *nid);
 uintptr_t runtime_kernel_resolve(const char *name);
 uintptr_t runtime_file_resolve(const char *name);
@@ -88,6 +87,7 @@ void runtime_thread_keys_cleanup(void);
 /* Guest-visible errno values are FreeBSD's. */
 int32_t runtime_guest_errno(int host_errno);
 void *runtime_low_map(size_t size, int prot);
+int runtime_low_unmap(void *address, size_t size);
 /* Windows: reserves the PS4 user address range as a placeholder (no-op elsewhere). */
 void runtime_memory_reserve(void);
 uintptr_t runtime_ajm_resolve(const char *name);

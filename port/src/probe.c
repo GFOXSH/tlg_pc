@@ -1278,7 +1278,6 @@ int main(int argc, char **argv) {
                 uint64_t address=bindings[relocs[i].value];
                 if (binding_kinds[relocs[i].value]!=relocs[i].kind || !mapped(segments,ns,address,relocs[i].addend+1)) fail("native export kind/range mismatch");
                 value=(uintptr_t)image+address+relocs[i].addend;
-                if (relocs[i].kind==1 && !relocs[i].addend) value=runtime_ngs2_trace_bind(names[relocs[i].value],value);
             }
         }
         memcpy(image + relocs[i].target, &value, 8);
@@ -1366,6 +1365,7 @@ int main(int argc, char **argv) {
             printf("Module %" PRIu64 " initializer returned %d\n",m,result);
             if (result) fail("module initializer failed");
         }
+        if (runtime_ngs2_start()) fail("bundled libSceNgs2 V5 initialization failed");
     }
     {   /* TLG_FREEZE_REPORT_SECONDS (default 10, 0 = off): no new frame for that long writes
          * every thread's wait, RIP and frames to the log (runtime_freeze.c). Needs the GPU. */

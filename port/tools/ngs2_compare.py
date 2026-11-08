@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Compares two NGS2 mixes recorded as float WAV (TLG_NGS2_TRACE_WAV with the console module,
-TLG_NGS2_WAV with the built-in mixer): per-channel level, how much of the time each channel is
-active, and the spectral balance, over the whole file or a window.
+"""Compare two NGS2 mixes recorded as float WAV: per-channel level, how much of the time each
+channel is active, and the spectral balance, over the whole file or a window.
 
-    ngs2_compare.py native.wav builtin.wav [--start S] [--seconds N]
-    ngs2_compare.py native.wav builtin.wav --align [--start S] [--seconds N]
+    ngs2_compare.py first.wav second.wav [--start S] [--seconds N]
+    ngs2_compare.py first.wav second.wav --align [--start S] [--seconds N]
 
 Without --align the two runs are compared as statistics. With --align the second recording is
 lined up with the first (log-envelope cross-correlation, then sample cross-correlation): the

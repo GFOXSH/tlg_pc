@@ -2,8 +2,9 @@
 # Builds dist/tlg-windows-x86_64.zip after `bash build.sh` in an MSYS2 CLANG64 shell:
 # "The Last Guardian.exe" (the launcher, frozen with PyInstaller so players need no Python),
 # "Play The Last Guardian.exe" (starts the game with the saved settings), out/tlg-probe.exe with
-# the CLANG64 DLLs it loads, the preparation scripts and the player README. No game or console
-# file may ship. Freezing uses a Windows Python 3.10+ (python.org or actions/setup-python;
+# the CLANG64 DLLs it loads, the preparation scripts and the player README. The supplied NGS2 V5
+# bundle is linked into the probe; no game dump or loose firmware module is staged. Freezing uses
+# a Windows Python 3.10+ (python.org or actions/setup-python;
 # WINPYTHON overrides) and a private venv in out/pyenv.
 set -euo pipefail
 cd -- "$(dirname -- "$0")/../.."
@@ -36,7 +37,7 @@ out/pyenv/Scripts/python.exe -m PyInstaller --noconfirm --clean --log-level WARN
 
 dest=out/stage/$name
 rm -rf -- out/stage
-mkdir -p "$dest/out" "$dest/launcher" "$dest/system_lib"
+mkdir -p "$dest/out" "$dest/launcher"
 cp -r "out/pyi-dist/The Last Guardian/." "$dest/"
 llvm-strip -o "$dest/Play The Last Guardian.exe" out/tlg-play.exe
 cp launcher/tlg.ico launcher/tlg.png "$dest/launcher/"
@@ -68,8 +69,6 @@ echo "Packaged $(find "$dest/out" -maxdepth 1 -iname '*.dll' | wc -l) DLLs from 
 cp -r scripts "$dest/"
 find "$dest" -name __pycache__ -prune -exec rm -r {} +
 cp LICENSE packaging/README-player.md "$dest/"
-printf '%s\r\n' 'Coloque aqui o libSceNgs2.sprx do firmware do seu PS4 (/system/common/lib) para ter som.' \
-    'Put libSceNgs2.sprx from your PS4 firmware (/system/common/lib) here for audio.' > "$dest/system_lib/LEIA-ME.txt"
 bash packaging/check_package.sh "$dest"
 mkdir -p dist
 rm -f "dist/$name.zip"

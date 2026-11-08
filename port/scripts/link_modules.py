@@ -98,6 +98,8 @@ def patch_fs_loads(image, ph, base):
 
 
 def link(game, out, module_names=DEFAULT_MODULES):
+    if any(Path(name.replace('\\', '/')).name.casefold() == 'libscengs2.sprx' for name in module_names):
+        raise ValueError('libSceNgs2.sprx is not loadable; use the bundled libSceNgs2 V5 library')
     main = module(game / 'eboot.bin')
     raw = (out / 'boot.bin').read_bytes()
     magic, size, entry, ns, nr, ni, flags = unpack('<8s6Q', raw, 0)
@@ -206,8 +208,8 @@ def link(game, out, module_names=DEFAULT_MODULES):
             candidates = by_nid.get((identity[0], 'libc'), [])
             found = candidates[0] if len(candidates) == 1 else None
         if not found and identity:
-            # tlg: system modules from the console firmware (libSceNgs2.sprx) export newer library
-            # versions than the game imports; same NID and library name is the same function.
+            # Some firmware modules export a different library version than the game imports.
+            # A unique match by NID and library name is still the same function.
             candidates = by_nid.get((identity[0], identity[1][0]), [])
             found = candidates[0] if len(candidates) == 1 else None
         if found:

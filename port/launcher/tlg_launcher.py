@@ -3535,7 +3535,6 @@ TEXT = {
     'title': ('The Last Guardian — PC', 'The Last Guardian — PC'),
     'game': ('Game', 'Jogo'),
     'game_dir': ('Game folder', 'Pasta do jogo'),
-    'system_lib_dir': ('Console system modules', 'Módulos do sistema do console'),
     'browse': ('Browse…', 'Procurar…'),
     'language': ('Language', 'Idioma'),
     'game_language': ('Game language (voice and text)', 'Idioma do jogo (voz e texto)'),
@@ -3632,8 +3631,6 @@ TEXT = {
     'color_contrast': ('Contrast (1 = unchanged)', 'Contraste (1 = sem alteração)'),
     'color_saturation': ('Saturation (1 = unchanged)', 'Saturação (1 = sem alteração)'),
     'color_gamma': ('Gamma (1 = unchanged)', 'Gama (1 = sem alteração)'),
-    'audio': ('Audio', 'Áudio'),
-    'native_audio': ('Native audio (libSceNgs2.sprx from your console)', 'Áudio nativo (libSceNgs2.sprx do seu console)'),
     'controls': ('Controls', 'Controles'),
     'mouse_enabled': ('Mouse turns the camera', 'Mouse gira a câmera'),
     'mouse_invert_y': ('Invert mouse Y axis', 'Inverter eixo Y do mouse'),
@@ -3671,9 +3668,7 @@ TEXT = {
                            'jogo e tente de novo).'),
     'quit': ('Quit', 'Sair'),
     'ready': ('Ready to play.', 'Pronto para jogar.'),
-    'audio_native': ('Audio: native (console module found).', 'Áudio: nativo (módulo do console encontrado).'),
-    'audio_builtin': ('Audio: built-in mixer, experimental (libSceNgs2.sprx not found or not selected).',
-                      'Áudio: mixer próprio, experimental (libSceNgs2.sprx não encontrado ou desmarcado).'),
+    'audio_status': ('Audio: bundled libSceNgs2 V5.', 'Áudio: libSceNgs2 V5 incluída.'),
     'missing': ('Missing', 'Faltando'),
     'not_built': ('Port not built (run build.sh)', 'Port não compilado (rode o build.sh)'),
     'preparing': ('Preparing the game…', 'Preparando o jogo…'),
@@ -3831,7 +3826,7 @@ class Launcher:
         game = ttk.LabelFrame(left_settings, text=self.t('game'), padding=8)
         game.grid(sticky='ew', pady=(0, 8))
         game.columnconfigure(0, weight=1)
-        for row, key in enumerate(('game_dir', 'system_lib_dir')):
+        for row, key in enumerate(('game_dir',)):
             ttk.Label(game, text=self.t(key)).grid(row=row * 2, column=0, columnspan=2, sticky='w')
             var = tk.StringVar(value=self.settings[key])
             var.trace_add('write', lambda *_: self.changed())
@@ -3839,9 +3834,6 @@ class Launcher:
             ttk.Entry(game, textvariable=var).grid(row=row * 2 + 1, column=0, sticky='ew', pady=(0, 6))
             ttk.Button(game, text=self.t('browse'), command=lambda k=key: self.browse(k)).grid(
                 row=row * 2 + 1, column=1, padx=(6, 0), pady=(0, 6))
-        audio = ttk.LabelFrame(left_settings, text=self.t('audio'), padding=8)
-        audio.grid(sticky='ew', pady=(0, 8))
-        self.check(audio, 0, 'native_audio')
         controls = ttk.LabelFrame(left_settings, text=self.t('controls'), padding=8)
         controls.grid(sticky='ew')
         controls.columnconfigure(1, weight=1)
@@ -4144,8 +4136,7 @@ class Launcher:
                              for k, d in problems)
         else:
             text = self.t('ready')
-        audio = self.t('audio_native') if tlg_run.ngs2_module(self.settings) else self.t('audio_builtin')
-        self.status.configure(text=f'{text}  {audio}')
+        self.status.configure(text=f'{text}  {self.t("audio_status")}')
         self.play_button.configure(state='disabled' if problems or self.process else 'normal')
         self.cache_button.configure(state='disabled' if self.process else 'normal')
 

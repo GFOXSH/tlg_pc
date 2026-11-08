@@ -229,7 +229,7 @@ static ABI int32_t libc_heap_trace_info(HeapTraceInfo *info) {
     return 0;
 }
 
-/* Needed by libSceNgs2.sprx (console firmware module, TLG_NGS2=native). */
+/* Imports used by the bundled libSceNgs2 V5 image. */
 static ABI int32_t compiled_sdk_version(int32_t *version) {
     if (!version) return KERR_EINVAL;
     *version = 0x04008061; /* the SDK the game's own modules report (FIOS2 log) */

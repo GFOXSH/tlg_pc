@@ -5,10 +5,8 @@
 Shared by the command line (run_tlg.sh -> `tlg_run.py [seconds]`) and the launcher window
 (tlg_launcher.py), so both start the game the same way:
   1. prepare.py / link_modules.py / content_profile.py build out/boot-linked.bin from the game
-     folder (eboot 1.03 + the game's libc/Fios2, and libSceNgs2.sprx from the console firmware
-     when present: native audio; otherwise the built-in mixer, runtime_ngs2.c); on a CPU without
-     the PS4's MOVBE/BMI1/LZCNT/SSE4A, and on Windows for the red-zone protection, isa_rewrite.py
-     writes out/isa-rewrite.bin, the instruction sites tlg-probe rewrites;
+     folder (eboot 1.03 + the game's libc/Fios2; audio uses the bundled libSceNgs2 V5 image);
+     isa_rewrite.py handles unsupported PS4 instructions and Windows red-zone protection;
   2. the TLG defaults below become TLG_* environment variables (each one validated in play);
   3. tlg-probe runs with its output in out/logs/run-<date>.log (last_run.log points to it).
 """
@@ -77,17 +75,14 @@ READBACK_FLAGS = (
 )
 
 DEFAULT_SETTINGS = {
-    # Source tree: the merged game view and the console modules of ~/decomp. Package: the player
-    # picks the game folder; libSceNgs2.sprx goes in system_lib/ next to the executable.
+    # Source tree: the merged game view. Package: the player picks the game folder.
     'game_dir': '' if FROZEN else str(REPO_DIR / 'game' / 'CUSA03627'),
-    'system_lib_dir': str(PORT_DIR / 'system_lib') if FROZEN else str(REPO_DIR / 'dump' / 'system_lib'),
     'game_language': 'pt_BR',
     'ui_language': 'auto',         # auto | pt_BR | en_US
     'show_fps': False,
     'display_mode': 'Windowed',    # Windowed | Borderless | Fullscreen (tlg.ini)
     'vsync': True,
     'vram_budget_mb': 5600,
-    'native_audio': True,
     # Mouse and keyboard (tlg.ini; the in-game menu's Controls tab changes the mouse ones too).
     'mouse_enabled': True,
     'mouse_sensitivity': 1.0,
@@ -200,11 +195,6 @@ def check_game(game_dir):
     if not PROBE.is_file():
         problems.append(('not_built', str(PROBE)))
     return problems
-
-
-def ngs2_module(settings):
-    path = Path(settings['system_lib_dir']) / 'libSceNgs2.sprx'
-    return path if settings.get('native_audio', True) and path.is_file() else None
 
 
 def read_ini(path):
@@ -324,9 +314,6 @@ def prepare(settings, log=print):
     game = settings['game_dir']
     scripts = PORT_DIR / 'scripts'
     modules = ['libc.prx', 'libSceFios2.prx']
-    ngs2 = ngs2_module(settings)
-    if ngs2:
-        modules.append(str(ngs2))
     steps = [
         [*python_command(scripts / 'prepare.py'), game, '--out', str(OUT_DIR)],
         [*python_command(scripts / 'link_modules.py'), game, '--out', str(OUT_DIR), '--modules', *modules],
@@ -450,8 +437,6 @@ def build_env(settings, extra=None):
         game_languages(settings.get('game_dir')).get(settings['game_language'], 1)))
     if settings.get('ui_language', 'auto') != 'auto':
         env['TLG_UI_LANG'] = settings['ui_language']
-    # Without the console module the port's own mixer (runtime_ngs2.c) plays the audio.
-    env['TLG_NGS2'] = 'native' if ngs2_module(settings) else 'hle'
     env['TLG_CONFIG'] = str(USER_DIR / 'tlg.ini')
     # Window name and app id (matches tlg-pc.desktop for Alt+Tab and the dock) and icon.
     env.setdefault('TLG_APP_NAME', 'The Last Guardian')
@@ -544,8 +529,6 @@ def main(argv=None):
         for path, error in failures:
             print(f'Não apagado (em uso? feche o jogo): {path}: {error}', file=sys.stderr)
         return 1 if failures else 0
-    if os.environ.get('TLG_NGS2') == 'hle':
-        settings['native_audio'] = False
     problems = check_game(settings['game_dir'])
     if problems:
         for kind, detail in problems:

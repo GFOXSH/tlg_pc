@@ -801,6 +801,17 @@ void *runtime_low_map(size_t size, int prot) {
     return p==MAP_FAILED ? NULL : p;
 #endif
 }
+int runtime_low_unmap(void *address, size_t size) {
+    uintptr_t start=(uintptr_t)address;
+    if (!address || !size || (start & (PAGE-1)) || size>SIZE_MAX-(PAGE-1)) return -1;
+    uint64_t length=align_up(size,PAGE);
+    if (length>SIZE_MAX || start<LOW_MIN || start>=USER_MIN || length>USER_MIN-start) return -1;
+#ifdef _WIN32
+    return VirtualFree(address,0,MEM_RELEASE) ? 0 : -1;
+#else
+    return munmap(address,(size_t)length);
+#endif
+}
 /* ---- GPU library interface (gpu/shim/tlggpu.cpp) ---- */
 /* Optimizations switched off at run time (diagnostics): the number in the file named by
  * TLG_TOGGLE_FILE, re-read every 250 ms. Bits: 1 region cache, 2 fetch shader cache,

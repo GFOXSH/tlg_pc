@@ -42,7 +42,7 @@ Por **HayatoG** · YouTube [@hayatog-dev](https://www.youtube.com/@hayatog-dev) 
 |---|---|
 | Boot, menu, intro e gameplay | ✅ Funciona; sessões de 10+ minutos sem falhas |
 | Imagem | ✅ Nativa, 1080p, sem tremores; SMAA, RCAS/CAS e ajustes de cor opcionais |
-| Áudio | ✅ Com o `libSceNgs2.sprx` do firmware do seu console |
+| Áudio | libSceNgs2 V5 do bundle estático integrada; validação no jogo pendente |
 | Controle | ✅ DualSense, DualShock 4, Xbox e 8BitDo via SDL3, com hot-plug; sensor de movimento real ou simulado |
 | Mouse e teclado | ✅ Câmera no mouse e remapeamento no launcher |
 | Saves | ✅ Autosave e Continuar |
@@ -78,7 +78,7 @@ Tudo vem do **seu** PS4 (GoldHEN + Itemzflow). Nada disso vai no download. Use *
 
 O **CUSA03745 (UE)** traz 15 idiomas, no lugar dos quatro do CUSA03627: inglês, francês, espanhol (Espanha), alemão, italiano, holandês, português (Portugal), russo, finlandês, sueco, dinamarquês, norueguês, polonês, turco e árabe. O launcher lista os idiomas do CUSA que estiver carregado.
 
-**Do firmware do console (opcional, para ter som):** `libSceNgs2.sprx` (372 KB), de `/system/common/lib/` do seu PS4. Ele vai na pasta `system_lib/` ao lado do executável.
+O áudio usa a imagem libSceNgs2 V5 incluída no pacote; nenhum módulo de áudio do firmware do console é necessário.
 
 **Como montar a pasta:**
 1. No Itemzflow, faça o dump do jogo (`CUSA03627` ou `CUSA03745`) e do update (`CUSA03627-patch` ou `CUSA03745-patch`) para um pendrive exFAT.
@@ -91,7 +91,7 @@ A lista completa, que também vai nas notas de cada Release, está em [`docs/ARQ
 
 ## Como jogar
 
-1. Extraia o pacote e coloque o `libSceNgs2.sprx` na pasta `system_lib/`.
+1. Extraia o pacote.
 2. Abra o **The Last Guardian**, escolha a pasta do jogo e o idioma (o CUSA03627 tem inglês, português, espanhol e francês; o CUSA03745 tem 15) e, se quiser, a taxa de quadros e os filtros de imagem. Clique em **Jogar**.
 3. No jogo, **F10** liga o contador de FPS, e **Insert** (ou R3 + L2 no controle) abre o menu do port.
 4. Controle (PS4/PS5, Xbox) ou teclado e mouse: o mouse gira a câmera, **Esc** solta o mouse e um clique prende de novo. O layout e o remapeamento estão no [`README-player.md`](port/packaging/README-player.md) e na caixa **Controles** do launcher.
@@ -113,12 +113,13 @@ cd .. && ./tlg_launcher.sh             # ou ./run_tlg.sh pelo terminal
 ```
 
 No Windows, o build roda no MSYS2 CLANG64 ([`port/packaging/windows/README.md`](port/packaging/windows/README.md)). O workflow [`.github/workflows/build.yml`](.github/workflows/build.yml) mostra o processo completo nas duas plataformas.
+Os três arquivos necessários ao NGS2 ficam em `port/third_party/ngs2`: `ngs2.a` (Linux), `ngs2.lib` (Windows) e `ngs2.h`.
 
 ## Como funciona
 
 | Camada | O que faz | Base |
 |---|---|---|
-| Loader | Carrega o `eboot.bin` 1.03 e liga os módulos do jogo (`libc.prx`, `libSceFios2.prx`) e o `libSceNgs2.sprx` do console | [bloodborne_pc](https://github.com/deadinside28/bloodborne_pc), [gow3_pc](https://github.com/FelipePrado0/gow3_pc) |
+| Loader | Carrega o `eboot.bin` 1.03, os módulos do jogo (`libc.prx`, `libSceFios2.prx`) e a imagem libSceNgs2 V5 do bundle estático | [bloodborne_pc](https://github.com/deadinside28/bloodborne_pc), [gow3_pc](https://github.com/FelipePrado0/gow3_pc) |
 | Runtime | Reimplementa as bibliotecas do PS4: kernel, threads, arquivos, controle, áudio, saves | gow3_pc + 54 funções novas para o TLG |
 | Vídeo | Traduz os comandos Gnm e os shaders GCN para Vulkan/SPIR-V | núcleo de vídeo do [shadPS4](https://github.com/shadps4-emu/shadPS4) |
 
@@ -126,7 +127,7 @@ Os detalhes técnicos (achados no Ghidra, bugs resolvidos, opções `TLG_*`) est
 
 ## Próximos passos
 
-[Roadmap gráfico (#7)](https://github.com/HayatoG/tlg_pc/issues/7): testar o 60 FPS no jogo todo (#5), efeitos do jogo (#3), resolução interna (#4) e FSR/DLSS (#6). Também estão nas issues o áudio sem o arquivo do firmware (#11), importar o jogo de PKG (#9), o macOS (#1) e as correções que forem aparecendo.
+[Roadmap gráfico (#7)](https://github.com/HayatoG/tlg_pc/issues/7): testar o 60 FPS no jogo todo (#5), efeitos do jogo (#3), resolução interna (#4) e FSR/DLSS (#6). A validação do áudio com o bundle NGS2 V5, importar o jogo de PKG (#9), o macOS (#1) e as correções que forem aparecendo também estão em acompanhamento.
 
 ## Créditos e aviso legal
 
@@ -166,7 +167,7 @@ The screenshots and the performance chart are at the top of this page.
 |---|---|
 | Boot, menu, intro and gameplay | ✅ Works; 10+ minute sessions without failures |
 | Graphics | ✅ Native 1080p, no shimmering; optional SMAA, RCAS/CAS and colour adjustments |
-| Audio | ✅ With `libSceNgs2.sprx` from your console's firmware |
+| Audio | Bundled libSceNgs2 V5 image integrated; in-game validation pending |
 | Controller | ✅ DualSense, DualShock 4, Xbox and 8BitDo via SDL3, with hot-plug; real or simulated motion sensor |
 | Mouse and keyboard | ✅ Mouse camera and remapping in the launcher |
 | Saves | ✅ Autosave and Continue |
@@ -198,7 +199,7 @@ Everything comes from **your own** PS4 (GoldHEN + Itemzflow). None of it is in t
 
 **CUSA03745 (EU)** ships 15 languages instead of CUSA03627's four: English, French, Spanish (Spain), German, Italian, Dutch, Portuguese (Portugal), Russian, Finnish, Swedish, Danish, Norwegian, Polish, Turkish and Arabic. The launcher lists the languages of the loaded CUSA.
 
-**From the console firmware (optional, for audio):** `libSceNgs2.sprx` (372 KB), from `/system/common/lib/` on your PS4. It goes in the `system_lib/` folder next to the executable.
+Audio uses the bundled libSceNgs2 V5 image; no audio module from the console firmware is required.
 
 **How to build the folder:**
 1. In Itemzflow, dump the game (`CUSA03627` or `CUSA03745`) and the update (`CUSA03627-patch` or `CUSA03745-patch`) to an exFAT USB drive.
@@ -211,7 +212,7 @@ The full list, which also goes in the notes of every Release, is in [`docs/ARQUI
 
 ## How to play
 
-1. Extract the package and put `libSceNgs2.sprx` in the `system_lib/` folder.
+1. Extract the package.
 2. Open **The Last Guardian**, pick the game folder and the language (CUSA03627 has English, Portuguese, Spanish and French; CUSA03745 has 15) and, if you like, the frame rate and image filters. Click **Play**.
 3. In game, **F10** toggles the FPS counter, and **Insert** (or R3 + L2 on a controller) opens the port's menu.
 4. Controller (PS4/PS5, Xbox) or keyboard and mouse: the mouse turns the camera, **Esc** releases the mouse and a click takes it back. The layout and remapping are in [`README-player.md`](port/packaging/README-player.md) and in the launcher's **Controls** box.
@@ -233,12 +234,13 @@ cd .. && ./tlg_launcher.sh             # or ./run_tlg.sh from a terminal
 ```
 
 On Windows, the build runs in MSYS2 CLANG64 ([`port/packaging/windows/README.md`](port/packaging/windows/README.md)). The workflow [`.github/workflows/build.yml`](.github/workflows/build.yml) shows the full process on both platforms.
+The three required NGS2 files are in `port/third_party/ngs2`: `ngs2.a` (Linux), `ngs2.lib` (Windows), and `ngs2.h`.
 
 ## How it works
 
 | Layer | What it does | Based on |
 |---|---|---|
-| Loader | Loads `eboot.bin` 1.03 and links the game's modules (`libc.prx`, `libSceFios2.prx`) and the console's `libSceNgs2.sprx` | [bloodborne_pc](https://github.com/deadinside28/bloodborne_pc), [gow3_pc](https://github.com/FelipePrado0/gow3_pc) |
+| Loader | Loads `eboot.bin` 1.03, the game's modules (`libc.prx`, `libSceFios2.prx`) and the bundled libSceNgs2 V5 image | [bloodborne_pc](https://github.com/deadinside28/bloodborne_pc), [gow3_pc](https://github.com/FelipePrado0/gow3_pc) |
 | Runtime | Reimplements the PS4 libraries: kernel, threads, files, controller, audio, saves | gow3_pc + 54 new functions for TLG |
 | Video | Translates Gnm commands and GCN shaders to Vulkan/SPIR-V | [shadPS4](https://github.com/shadps4-emu/shadPS4) video core |
 
@@ -246,7 +248,7 @@ Technical notes (Ghidra findings, fixed bugs, `TLG_*` options) are in [`docs/TEC
 
 ## Next steps
 
-[Graphics roadmap (#7)](https://github.com/HayatoG/tlg_pc/issues/7): testing 60 FPS through the whole game (#5), game effects (#3), internal resolution (#4) and FSR/DLSS (#6). Audio without the firmware file (#11), importing the game from a PKG (#9), macOS (#1) and new fixes are tracked in the issues as well.
+[Graphics roadmap (#7)](https://github.com/HayatoG/tlg_pc/issues/7): testing 60 FPS through the whole game (#5), game effects (#3), internal resolution (#4) and FSR/DLSS (#6). Audio validation with the bundled NGS2 V5 image, importing the game from a PKG (#9), macOS (#1) and new fixes are tracked in the issues as well.
 
 ## Credits and legal notice
 

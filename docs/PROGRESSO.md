@@ -10,7 +10,7 @@ The Last Guardian (PS4, CUSA03627, update 1.03) roda no PC com imagem, som, cont
 | --- | --- |
 | Boot, menu, intro, gameplay | Funciona; sessões de 10+ minutos sem falhas |
 | Imagem | Nativa, sem tremor (FSR3/jitter do port de GoW3 desligados) |
-| Áudio | Funciona: NGS2 original do firmware do console |
+| Áudio | libSceNgs2 V5 do bundle estático integrada; validar inicialização e áudio no jogo |
 | Controle | DualSense e 8BitDo via SDL3, com hot-plug |
 | Saves | Autosave e Continue funcionam |
 | Desempenho | 30 FPS (trava original do jogo); engasgos pontuais de 20 a 70 ms, pouco perceptíveis |
@@ -32,7 +32,7 @@ Tudo em 12 e 13 de outubro de 2026, do dump do console até o jogo jogável e pu
 | Menu do overlay para o TLG | Abas Overlay, Imagem e Desempenho, bilíngue, com mouse; sem as opções do GoW3 |
 | Contador de FPS nativo | F10 liga e desliga; GPU, CPU, RAM e VRAM medidos no Linux |
 | Renomeação para TLG | 2.581 ocorrências em 247 arquivos; variáveis `TLG_*`, binário `tlg-probe` |
-| Áudio nativo | `libSceNgs2.sprx` do firmware do console linkado como módulo; som na intro e no gameplay |
+| Áudio | Bundle estático libSceNgs2 V5 integrado; sem dependência de SPRX do firmware |
 | Saves e lança do Trico | Leitura curta de textura corrigida; Continue volta ao ponto certo |
 | Imagem nativa | FSR3, jitter e motion vectors do GoW3 desligados: o tremor sumiu |
 | Readback GPU para CPU | Modo Precise sem deadlocks; entrada no gameplay sem crash |
@@ -47,8 +47,8 @@ Tudo em 12 e 13 de outubro de 2026, do dump do console até o jogo jogável e pu
 flowchart LR
     L["Launcher (tlg_launcher.py / tlg_run.py)<br/>prepare.py · link_modules.py · content_profile.py"] --> P
     subgraph P["Processo tlg-probe (Linux x86-64)"]
-        E["eboot.bin 1.03 + libc.prx + libSceFios2.prx<br/>+ libSceNgs2.sprx (código PS4 nativo na CPU)"]
-        R["Runtime HLE (src/runtime_*.c)<br/>kernel, arquivos, threads, pad, áudio, saves"]
+        E["eboot.bin 1.03 + libc.prx + libSceFios2.prx<br/>+ imagem libSceNgs2 V5 do bundle estático"]
+        R["Runtime HLE (src/runtime_*.c)<br/>kernel, arquivos, threads, pad, AudioOut, saves"]
         G["Tradutor de GPU (shadPS4 video_core)<br/>Gnm/PM4 + shaders GCN → Vulkan/SPIR-V"]
         E -- "imports por NID" --> R
         E -- "command buffers Gnm" --> G
@@ -57,7 +57,7 @@ flowchart LR
     G --> VK["Driver Vulkan (RTX 2060)"]
 ```
 
-O launcher prepara a imagem do jogo. Dentro do processo, o eboot e os módulos rodam nativos na CPU; só as chamadas de sistema e de GPU passam pelo runtime e pelo tradutor para Vulkan.
+O launcher prepara a imagem do jogo. Dentro do processo, o eboot, os módulos e a imagem NGS2 embutida rodam nativos na CPU; só as chamadas de sistema e de GPU passam pelo runtime e pelo tradutor para Vulkan.
 
 ## Problemas encontrados e correções
 
@@ -75,7 +75,7 @@ Cada linha é um bug que impedia o jogo de avançar ou estragava a imagem, com a
 | Deadlock do modo Precise | Threads internas da GPU disparando o próprio readback | Leitura pela visão sem proteção; workers desistem antes do readback |
 | Texturas tremendo e piscando | FSR3 e jitter do GoW3; cache de texturas com 2 GB | Imagem nativa; orçamento de 5600 MB |
 | Crash após tirar a lança | Leitura curta de textura (assert `JsTex.cpp:459`) com páginas re-protegidas | Leitura em laço até completar |
-| Jogo mudo | NGS2 era um placeholder silencioso | Módulo NGS2 nativo do firmware |
+| Áudio | A versão atual integra o bundle estático libSceNgs2 V5; validação no jogo ainda pendente | Imports resolvidos pelo runtime e inicialização após TLS/procparam |
 | Fechou com erro (código 23) após ~34 min: `buffer.cpp:135` "Failed allocating buffer (size 0x0, memory type 2)" | Imagem de color buffer com extensão zero — hint CB/DB com uma dimensão 0, ou `ColorBuffer::Height()` = 0 quando o slice é menor que uma linha — e o readback de 0 bytes pedia um buffer Vulkan de tamanho 0, que o driver recusa | `CbDbExtent::Valid()` só aceita hint com as duas dimensões; `ColorBuffer::Height()` nunca devolve 0; o readback (`ReadbackSize`) é pulado com aviso quando não cabe na alocação (slice de menos de uma linha); teste `image-extent-test` |
 
 ## O que falta

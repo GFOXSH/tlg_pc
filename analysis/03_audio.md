@@ -3,6 +3,8 @@
 Estudo de viabilidade do port para PC. Endereços em espaço Ghidra (base 0x1000000).
 Legenda: **[C]** = confirmado no binário/dados, **[D]** = deduzido com boa confiança (decompilação + headers públicos/shadPS4), **[H]** = hipótese/palpite.
 
+> Atualização: este estudo e o plano HLE abaixo são históricos. O runtime atual integra a imagem libSceNgs2 V5 do bundle estático e não carrega SPRX do firmware.
+
 ---
 
 ## 0. Resumo

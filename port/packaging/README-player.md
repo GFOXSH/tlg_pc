@@ -24,7 +24,7 @@ Tudo vem do **seu** PS4 (GoldHEN + Itemzflow). Nada disso vai no download. Use *
 | `trico_enu.psarc` / `trico_ptb.psarc` / `trico_esl.psarc` / `trico_frc.psarc` (+ os `…p.psarc` do update) | base + update | ~280 MB cada | vozes e textos: inglês, português, espanhol, francês |
 | `sce_discmap.plt`, `sce_discmap_patch.plt` | base, update | pequenos | mapa de arquivos (recomendado) |
 
-**Do firmware do console (opcional, para o áudio nativo):** `libSceNgs2.sprx` (372 KB), de `/system/common/lib/` do seu PS4. Ele vai na pasta `system_lib/` ao lado do executável.
+O áudio usa a versão V5 de `libSceNgs2` incluída no pacote; nenhum módulo de áudio do firmware do console é necessário.
 
 **Como montar a pasta:**
 1. No Itemzflow, faça o dump do jogo (`CUSA03627`) e do update (`CUSA03627-patch`) para um pendrive exFAT.
@@ -36,11 +36,10 @@ Tudo vem do **seu** PS4 (GoldHEN + Itemzflow). Nada disso vai no download. Use *
 ### Como jogar
 
 1. Extraia o pacote numa pasta qualquer (no Windows, fora do .zip).
-2. Coloque o `libSceNgs2.sprx` na pasta `system_lib/`, ao lado do executável (opcional: sem ele, o port usa o seu próprio mixer de áudio, ainda experimental).
-3. Abra **The Last Guardian** (`The Last Guardian.exe` no Windows).
+2. Abra **The Last Guardian** (`The Last Guardian.exe` no Windows).
    - No Windows, se aparecer "O Windows protegeu o computador", clique em *Mais informações* e depois em *Executar assim mesmo*. O programa não é assinado digitalmente.
-4. Em **Pasta do jogo**, escolha a pasta que tem o `eboot.bin`.
-5. Escolha o idioma do jogo (inglês, português, espanhol ou francês) e clique em **Jogar**. A primeira partida demora um pouco mais.
+3. Em **Pasta do jogo**, escolha a pasta que tem o `eboot.bin`.
+4. Escolha o idioma do jogo (inglês, português, espanhol ou francês) e clique em **Jogar**. A primeira partida demora um pouco mais.
 
 No Linux, `./install_desktop.sh` adiciona o jogo ao menu de aplicativos.
 
@@ -82,7 +81,7 @@ Com a janela do jogo em foco, o mouse fica preso e gira a câmera. **Esc** solta
 
 ### Problemas
 
-- **Som incompleto ou estranho**: sem o `libSceNgs2.sprx` em `system_lib/`, o port usa o seu próprio mixer, ainda experimental (sem reverb e sem filtros). Com o arquivo, o áudio é o nativo.
+- **Sem áudio**: confira `out/last_run.log` para mensagens de inicialização ou imports do NGS2. O port usa a libSceNgs2 V5 incluída; arquivos SPRX externos não são carregados.
 - **Não abre ou fecha sozinho**: veja a caixa de log no launcher e mande o `out/last_run.log` no [Discord](https://discord.gg/UMkdMYZh9g) ou numa [issue](https://github.com/HayatoG/tlg_pc/issues).
 - **NVIDIA**: use um driver recente.
 
@@ -104,7 +103,7 @@ Everything comes from **your own** PS4 (GoldHEN + Itemzflow). None of it is in t
 | `trico_enu.psarc` / `trico_ptb.psarc` / `trico_esl.psarc` / `trico_frc.psarc` (+ the update's `…p.psarc`) | base + update | ~280 MB each | voices and text: English, Portuguese, Spanish, French |
 | `sce_discmap.plt`, `sce_discmap_patch.plt` | base, update | small | file map (recommended) |
 
-**From the console firmware (optional, for native audio):** `libSceNgs2.sprx` (372 KB), from `/system/common/lib/` on your PS4. It goes in the `system_lib/` folder next to the executable.
+Audio uses the bundled libSceNgs2 V5 image; no audio module from the console firmware is required.
 
 **How to build the folder:**
 1. In Itemzflow, dump the game (`CUSA03627`) and the update (`CUSA03627-patch`) to an exFAT USB drive.
@@ -116,11 +115,10 @@ Everything comes from **your own** PS4 (GoldHEN + Itemzflow). None of it is in t
 ### How to play
 
 1. Extract the package anywhere (on Windows, outside the .zip).
-2. Put `libSceNgs2.sprx` in the `system_lib/` folder next to the executable (optional: without it, the port uses its own audio mixer, still experimental).
-3. Open **The Last Guardian** (`The Last Guardian.exe` on Windows).
+2. Open **The Last Guardian** (`The Last Guardian.exe` on Windows).
    - On Windows, if "Windows protected your PC" appears, click *More info*, then *Run anyway*. The program is not digitally signed.
-4. Under **Game folder**, choose the folder that has `eboot.bin`.
-5. Pick the game language (English, Portuguese, Spanish or French) and click **Play**. The first start takes a little longer.
+3. Under **Game folder**, choose the folder that has `eboot.bin`.
+4. Pick the game language (English, Portuguese, Spanish or French) and click **Play**. The first start takes a little longer.
 
 On Linux, `./install_desktop.sh` adds the game to the applications menu.
 
@@ -160,7 +158,7 @@ While the game window has focus, it takes the mouse and the mouse turns the came
 
 ### Problems
 
-- **Incomplete or odd sound**: without `libSceNgs2.sprx` in `system_lib/`, the port uses its own mixer, still experimental (no reverb or filters yet). With the file, audio is native.
+- **No audio**: check `out/last_run.log` for NGS2 initialization or import errors. The port uses the bundled libSceNgs2 V5 image; external SPRX files are not loaded.
 - **Does not start or closes by itself**: check the log box in the launcher and send `out/last_run.log` on [Discord](https://discord.gg/UMkdMYZh9g) or in an [issue](https://github.com/HayatoG/tlg_pc/issues).
 - **NVIDIA**: use a recent driver.
 

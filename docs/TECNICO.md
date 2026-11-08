@@ -50,7 +50,7 @@ Pontos de atenção: os 6 GB de VRAM, e o fato de os ports atuais terem sido tes
 | **Qualidade de imagem** | ✅ imagem nativa: o tremor e as piscadas sumiram ao desligar o FSR3, o jitter e os motion vectors do port de GoW3, e ao subir o orçamento de VRAM |
 | **Lança do Trico → cutscene** | ✅ corrigida a leitura curta de textura (assert `JsTex.cpp:459`), confirmado jogando |
 | **Saves** | ✅ autosave + `Continue` volta ao ponto certo (SaveDataMemory2) |
-| **Áudio** | ✅ funcionando na intro e no gameplay: `libSceNgs2.sprx` do firmware do próprio console linkado como módulo nativo (mixer, efeitos e VAG originais) + AJM do runtime (ATRAC9 via LibAtrac9) |
+| **Áudio** | libSceNgs2 V5 do bundle estático integrada; validar inicialização e áudio no jogo (imports AJM via runtime) |
 | Desempenho | 30 FPS estáveis; engasgos pontuais (20–70 ms) por falhas de leitura do modo Precise → otimizar com readback direcionado (`AsyncMap`) |
 
 ---
@@ -129,7 +129,7 @@ Listas completas em `analysis/eboot_imports_1.03.json`.
 | libScePosix | 22 | pthread/stat POSIX |
 | libSceAudio3d | 12 | importado, mas **não usado** (ver áudio) |
 | libScePad | 11 | controle, light bar, vibração, sensores de movimento |
-| libSceNgs2 | 10 | mixer/vozes de áudio |
+| libSceNgs2 | 10 | mixer/vozes resolvidos para a imagem V5 embutida |
 | libSceVideoOut | 10 | saída de vídeo e modo de saída (o 1.03 adicionou `ConfigureOutputMode_` e `ModeSetAny_`) |
 | libSceAudioOut | 7 | saída de som |
 | SaveData (6), NpTrophy (5), PlayGo (5), PlayGoDialog (5), SystemService (4), AppContent, NetCtl, Sysmodule, UserService (2 cada), CommonDialog, NpManager (1 cada) | | serviços |
@@ -272,7 +272,7 @@ implementação. Isso não garante que cada função esteja completa.
 
 | Lacuna | Funções | Observação |
 |---|---|---|
-| libSceNgs2 | 10 | **Maior buraco**: ninguém implementou ainda |
+| libSceNgs2 | 10 | imagem V5 estática integrada; validação de áudio em execução pendente |
 | libSceAudio3d | 12 | stub (não é usado) |
 | libkernel | 16 | event flags, `IsNeoMode`, `Getdents`, alguns `scePthread*` (triviais) |
 | libSceSaveData | 5 | variante `SaveDataMemory2` |
@@ -293,7 +293,7 @@ São ordens de grandeza, não compromissos. Os riscos estão listados abaixo da 
 | 4 | Threads e timing | Mapear afinidades (7 cores fixos) e prioridades, emular o spin-sleep por equeue, evitar busy-waits no core 0 | 1–2 semanas |
 | 5 | **Vídeo até a 1ª imagem** | Ligar o núcleo do shadPS4, HLE Gnm/VideoOut e forçar 1080p | 2–4 semanas |
 | 6 | **Vídeo até ficar jogável** | Bugs específicos do anzu (async compute + readback para CPU, checkerboard desligado, formatos GNF), NVIDIA/6 GB de VRAM | 1–3 meses |
-| 7 | **Áudio** | AudioOut (1–2 dias) + **NGS2 em software** (mín. 2–3 semanas; +3–5 com efeitos) — _ou_ carregar o `libSceNgs2.sprx` do firmware do próprio console (1–4 semanas, não verificado) | 3–8 semanas |
+| 7 | **Áudio** | Validar o bundle estático libSceNgs2 V5 e os imports AJM no jogo | pendente |
 | 8 | 60 FPS / extras (opcional) | Patch do flip rate + dt fixo em 1/30 + clamp de 0,05 s. Verificar física (Havok), animação e Lua; resolução/ultrawide | 2–6 semanas |
 
 **Total até "jogável do início ao fim a 30 fps": ~4–7 meses de 1 pessoa.** Muito do trabalho em paralelo
@@ -301,7 +301,7 @@ São ordens de grandeza, não compromissos. Os riscos estão listados abaixo da 
 
 **Maiores riscos:**
 1. Bugs gráficos do engine anzu no tradutor do shadPS4, sobretudo o async compute com readback.
-2. O NGS2, que ninguém implementou ainda.
+2. A validação do áudio integrado do NGS2 V5 em sessões reais de jogo.
 3. A NVIDIA, que é pouco testada nesses ports.
 4. 60 fps, porque a física e as animações do Trico podem estar presas a 30 Hz.
 
@@ -310,6 +310,7 @@ São ordens de grandeza, não compromissos. Os riscos estão listados abaixo da 
 ## Opções (variáveis `TLG_*`)
 
 Uso: `TLG_<OPÇÃO>=valor ./run_tlg.sh`. Os padrões abaixo já estão em `port/launcher/tlg_run.py` (launcher e `run_tlg.sh`) e foram validados jogando.
+O áudio usa a imagem libSceNgs2 V5 do bundle estático; não existe opção para carregar um SPRX externo.
 
 | Opção | Padrão TLG | O que faz |
 |---|---|---|
@@ -325,10 +326,6 @@ Uso: `TLG_<OPÇÃO>=valor ./run_tlg.sh`. Os padrões abaixo já estão em `port/
 | `TLG_PAD_FILE` | — | entrada roteirizada do controle (testes automáticos) |
 | `TLG_TOGGLE_FILE` | — | máscara de otimizações desligadas, lida em tempo real |
 | `TLG_GAME_DIR` | `game/CUSA03627` | pasta do jogo (visão unificada base + 1.03) |
-| `TLG_NGS2` | `native` com o `.sprx`, senão `hle` | áudio: `native` = `libSceNgs2.sprx` do console; `hle` = mixer próprio (`runtime_ngs2.c`, experimental, ver [NGS2_LEVANTAMENTO.md](NGS2_LEVANTAMENTO.md)) |
-| `TLG_NGS2_LOG` | `0` | mixer próprio: parâmetros não tratados, erros de decodificação e um resumo a cada 30 s |
-| `TLG_NGS2_WAV` | — | mixer próprio: grava a mixagem final (float, 8 canais) para comparar com o nativo (`TLG_NGS2_TRACE_WAV`) via `port/tools/ngs2_compare.py` |
-| `TLG_NGS2_USERFX` / `TLG_NGS2_REVERB` / `TLG_NGS2_CUSTOM` / `TLG_NGS2_DELAY_TYPE` | `1` / — / — / `1` | mixer próprio, para depuração: `USERFX=0` não chama os efeitos do jogo (USER_FX); `REVERB=pass` deixa o rack de reverb passar a entrada sem processar; `CUSTOM=mute` cala os racks custom (chorus/delay); `DELAY_TYPE=0` faz o delay usar um downmix mono em vez de um por canal |
 
 Todas as opções do código usam o prefixo `TLG_` (o código herdado do gow3_pc foi renomeado).
 
