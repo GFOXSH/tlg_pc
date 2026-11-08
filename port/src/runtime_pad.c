@@ -3,7 +3,8 @@
  *
  * Default keyboard layout (TLG_KEY_MAP or tlg.ini key_map changes the buttons, see
  * apply_button_map):
- *   WASD left stick, IJKL right stick, Ctrl Cross (crouch), Space Triangle (jump),
+ *   WASD left stick, IJKL right stick (remappable with TLG_WALK_* / TLG_CAMERA_*),
+ *   Ctrl Cross (crouch), Space Triangle (jump),
  *   E/left mouse Circle (interact), LShift Square (dash/throw), Q L1 (find Trico),
  *   F/right mouse R1 (call Trico/command), Tab L3 (hint), Enter Options (pause),
  *   arrow keys D-pad,
@@ -173,13 +174,12 @@ static SDL_Gamepad *current_gamepad(void) {
 /* Button sources: a host button or key and the PS4 button it presses. The defaults below can be
  * changed per PS4 button with TLG_PAD_MAP (gamepad) and TLG_KEY_MAP (keyboard), e.g.
  * TLG_KEY_MAP="cross=Q,square=Left Shift" or TLG_PAD_MAP="cross=b,circle=a": comma-separated
- * <ps4 button>=<SDL key or gamepad button name>. A mapped PS4 button loses its default sources;
- * '|' gives it several ("triangle=Q|Mouse Left") and "none" leaves it without any. The keyboard
- * map also takes the mouse: Mouse Left/Middle/Right/X1/X2, Wheel Up/Down/Left/Right.
+ * <ps4 button>=<SDL key or gamepad button name>. A mapped PS4 button loses its default keyboard
+ * source; '|' gives it several and "none" leaves it without any. The fixed mouse bindings are
+ * Mouse Left -> Circle, Mouse Right -> R1, Wheel Down/Up -> D-pad left/right; they are not configurable.
  * touchpad_left (alias touchpad) and touchpad_right are the two sides of the touchpad click:
  *   left/right touchpad clicks. Back/View (Share on a DualSense) is the right click, and with
- * L1 held the left one. Sticks, triggers, the real touchpad click and the overlay shortcuts are
- * not remapped. */
+ * L1 held the left one. Sticks, triggers, the real touchpad click and overlay shortcuts are not remapped. */
 static const struct { const char *name; uint32_t ps; } ps_names[]={
     {"cross",BTN_CROSS}, {"circle",BTN_CIRCLE}, {"square",BTN_SQUARE}, {"triangle",BTN_TRIANGLE},
     {"l1",BTN_L1}, {"r1",BTN_R1}, {"l2",BTN_L2}, {"r2",BTN_R2}, {"l3",BTN_L3}, {"r3",BTN_R3},
@@ -213,14 +213,44 @@ static ButtonMap key_map={{
     {SDL_SCANCODE_TAB,BTN_L3}, {SDL_SCANCODE_RETURN,BTN_OPTIONS},
     {SDL_SCANCODE_UP,BTN_UP}, {SDL_SCANCODE_DOWN,BTN_DOWN},
     {SDL_SCANCODE_LEFT,BTN_LEFT}, {SDL_SCANCODE_RIGHT,BTN_RIGHT},
-    {WHEEL_DOWN,BTN_LEFT}, {WHEEL_UP,BTN_RIGHT}, {MOUSE_LEFT,BTN_CIRCLE}, {MOUSE_RIGHT,BTN_R1},
-},16};
-
+},12};
+static const char *stick_key_names[]={
+    "walk_up","walk_left","walk_down","walk_right",
+    "camera_up","camera_left","camera_down","camera_right",
+};
+static SDL_Scancode stick_keys[]={
+    SDL_SCANCODE_W,SDL_SCANCODE_A,SDL_SCANCODE_S,SDL_SCANCODE_D,
+    SDL_SCANCODE_I,SDL_SCANCODE_J,SDL_SCANCODE_K,SDL_SCANCODE_L,
+};
 static char *trim(char *text) {
     while (*text==' ' || *text=='\t') ++text;
     char *end=text+strlen(text);
     while (end>text && (end[-1]==' ' || end[-1]=='\t' || end[-1]=='\r' || end[-1]=='\n')) *--end=0;
     return text;
+}
+
+static void load_stick_keys(void) {
+    static bool loaded;
+    if (loaded) return;
+    loaded=true;
+    for (size_t i=0;i<sizeof(stick_key_names)/sizeof(*stick_key_names);++i) {
+        char env_name[40], key_name[128];
+        snprintf(env_name,sizeof(env_name),"TLG_%s",stick_key_names[i]);
+        const char *configured=getenv(env_name);
+        if (!configured || !*configured) continue;
+        snprintf(key_name,sizeof(key_name),"%s",configured);
+        char *name=trim(key_name);
+        if (!SDL_strcasecmp(name,"none")) {
+            stick_keys[i]=SDL_SCANCODE_UNKNOWN;
+            continue;
+        }
+        const SDL_Scancode key=SDL_GetScancodeFromName(name);
+        if (key<=SDL_SCANCODE_UNKNOWN) {
+            printf("Runtime: stick keys: ignored %s=%s (unknown key)\n",env_name,key_name);
+            continue;
+        }
+        stick_keys[i]=key;
+    }
 }
 
 /* A source name: a key (or mouse button) for the keyboard map, a gamepad button otherwise; -1
@@ -263,6 +293,8 @@ static int apply_button_map(ButtonMap *map, const char *spec, bool keyboard) {
             if ((bar=strchr(name,'|'))) *bar++=0;
             const int source=*trim(name) ? source_from_name(trim(name),keyboard) : -1;
             if (source<0) { if (*trim(name)) printf("Runtime: pad map: unknown name '%s'\n",trim(name)); }
+            else if (keyboard && source>=MOUSE_SOURCE)
+                printf("Runtime: pad map: ignored configurable mouse binding '%s' (fixed by the runtime)\n",trim(name));
             else if (count<8) sources[count++]=source;
         }
         if (!ps || (!count && !none)) {
@@ -455,19 +487,28 @@ static uint32_t sample_mouse(PadData *d) {
     const float dt=mouse_last_us ? (float)(now-mouse_last_us)/1e6f : MOUSE_STICK_WINDOW_S;
     mouse_last_us=now;
     static bool was_captured;
-    if (!in.mouse_enabled || !m.captured) {
+    if (!m.captured) {
         memset(&mouse_stick,0,sizeof(mouse_stick));
         memset(wheel,0,sizeof(wheel));
         was_captured=false;
         return 0;
     }
-    if (!was_captured) { m.dx=m.dy=0; was_captured=true; } /* motion from before the game read the pad */
+    if (!in.mouse_enabled) {
+        memset(&mouse_stick,0,sizeof(mouse_stick));
+        m.dx=m.dy=0;
+        was_captured=false;
+    } else {
+        if (!was_captured) m.dx=m.dy=0; /* motion from before the game read the pad */
+        was_captured=true;
+    }
     ++mouse_samples;
-    const MouseStickParams p={in.sensitivity,in.smoothing,in.accel,in.deadzone,in.invert_y};
-    mouse_stick_update(&mouse_stick,&p,m.dx,m.dy,dt);
     const uint8_t base_x=d->right_x, base_y=d->right_y;
-    d->right_x=mouse_stick_add(d->right_x,mouse_stick_axis(&mouse_stick,&p,0));
-    d->right_y=mouse_stick_add(d->right_y,mouse_stick_axis(&mouse_stick,&p,1));
+    if (in.mouse_enabled) {
+        const MouseStickParams p={in.sensitivity,in.smoothing,in.accel,in.deadzone,in.invert_y};
+        mouse_stick_update(&mouse_stick,&p,m.dx,m.dy,dt);
+        d->right_x=mouse_stick_add(d->right_x,mouse_stick_axis(&mouse_stick,&p,0));
+        d->right_y=mouse_stick_add(d->right_y,mouse_stick_axis(&mouse_stick,&p,1));
+    }
     uint32_t bits=m.held|m.pressed;
     const int32_t notches[4]={m.wheel_up,m.wheel_down,m.wheel_left,m.wheel_right};
     for (int i=0;i<4;++i) {
@@ -535,10 +576,11 @@ static void sample_host(PadData *d) {
     /* The keyboard works with or without a gamepad: its buttons add to the pad's, and a stick
      * follows the keys only while one of them is held. */
     if (!k) return;
-    key_axis(&d->left_x,k[SDL_SCANCODE_A],k[SDL_SCANCODE_D]);
-    key_axis(&d->left_y,k[SDL_SCANCODE_W],k[SDL_SCANCODE_S]);
-    key_axis(&d->right_x,k[SDL_SCANCODE_J],k[SDL_SCANCODE_L]);
-    key_axis(&d->right_y,k[SDL_SCANCODE_I],k[SDL_SCANCODE_K]);
+    load_stick_keys();
+    key_axis(&d->left_x,k[stick_keys[1]],k[stick_keys[3]]);
+    key_axis(&d->left_y,k[stick_keys[0]],k[stick_keys[2]]);
+    key_axis(&d->right_x,k[stick_keys[5]],k[stick_keys[7]]);
+    key_axis(&d->right_y,k[stick_keys[4]],k[stick_keys[6]]);
     const uint32_t mouse=sample_mouse(d); /* adds to the right stick */
     for (size_t i=0;i<key_map.count;++i) {
         const int source=key_map.entries[i].source;
@@ -546,6 +588,10 @@ static void sample_host(PadData *d) {
                                              : source<SDL_SCANCODE_COUNT && k[source];
         if (down) d->buttons|=key_map.entries[i].ps;
     }
+    if (mouse & (1u<<(MOUSE_LEFT-MOUSE_SOURCE))) d->buttons|=BTN_CIRCLE;
+    if (mouse & (1u<<(MOUSE_RIGHT-MOUSE_SOURCE))) d->buttons|=BTN_R1;
+    if (mouse & (1u<<(WHEEL_DOWN-MOUSE_SOURCE))) d->buttons|=BTN_LEFT;
+    if (mouse & (1u<<(WHEEL_UP-MOUSE_SOURCE))) d->buttons|=BTN_RIGHT;
     apply_swipe(d,g,k); /* after the key map: Backspace+IJKL swipes instead of clicking */
     if (d->buttons & BTN_L2) d->l2=255;
     if (d->buttons & BTN_R2) d->r2=255;
