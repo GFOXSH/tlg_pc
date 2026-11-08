@@ -24,7 +24,7 @@ Tudo vem do **seu** PS4 (GoldHEN + Itemzflow). Nada disso vai no download. Use *
 | `trico_enu.psarc` / `trico_ptb.psarc` / `trico_esl.psarc` / `trico_frc.psarc` (+ os `…p.psarc` do update) | base + update | ~280 MB cada | vozes e textos: inglês, português, espanhol, francês |
 | `sce_discmap.plt`, `sce_discmap_patch.plt` | base, update | pequenos | mapa de arquivos (recomendado) |
 
-**Do firmware do console (opcional, para o áudio nativo):** `libSceNgs2.sprx` (372 KB), de `/system/common/lib/` do seu PS4. Ele vai na pasta `system_lib/` ao lado do executável.
+**Do firmware do console (opcional, para o áudio nativo):** `libSceNgs2.sprx` de `/system/common/lib/` do seu PS4. Coloque-o em `system_lib/` ao lado do executável. Para economizar espaço em disco, também pode usar `libSceNgs2.ngspak` ou `libSceNgs2_compact.ngspak` no lugar do `.sprx`. O port valida os SHA-256 e expande o container em memória durante a preparação do `boot-linked.bin`, antes do parse ELF e das relocações; o código continua expandido enquanto o jogo roda. Se o `.sprx` e o `.ngspak` estiverem juntos, o `.sprx` tem prioridade.
 
 **Como montar a pasta:**
 1. No Itemzflow, faça o dump do jogo (`CUSA03627`) e do update (`CUSA03627-patch`) para um pendrive exFAT.
@@ -36,7 +36,7 @@ Tudo vem do **seu** PS4 (GoldHEN + Itemzflow). Nada disso vai no download. Use *
 ### Como jogar
 
 1. Extraia o pacote numa pasta qualquer (no Windows, fora do .zip).
-2. Coloque o `libSceNgs2.sprx` na pasta `system_lib/`, ao lado do executável (opcional: sem ele, o port usa o seu próprio mixer de áudio, ainda experimental).
+2. Coloque o `libSceNgs2.sprx` ou o `libSceNgs2_compact.ngspak` na pasta `system_lib/`, ao lado do executável (opcional: sem ele, o port usa o seu próprio mixer de áudio, ainda experimental).
 3. Abra **The Last Guardian** (`The Last Guardian.exe` no Windows).
    - No Windows, se aparecer "O Windows protegeu o computador", clique em *Mais informações* e depois em *Executar assim mesmo*. O programa não é assinado digitalmente.
 4. Em **Pasta do jogo**, escolha a pasta que tem o `eboot.bin`.
@@ -104,7 +104,7 @@ Everything comes from **your own** PS4 (GoldHEN + Itemzflow). None of it is in t
 | `trico_enu.psarc` / `trico_ptb.psarc` / `trico_esl.psarc` / `trico_frc.psarc` (+ the update's `…p.psarc`) | base + update | ~280 MB each | voices and text: English, Portuguese, Spanish, French |
 | `sce_discmap.plt`, `sce_discmap_patch.plt` | base, update | small | file map (recommended) |
 
-**From the console firmware (optional, for native audio):** `libSceNgs2.sprx` (372 KB), from `/system/common/lib/` on your PS4. It goes in the `system_lib/` folder next to the executable.
+**From the console firmware (optional, for native audio):** `libSceNgs2.sprx` from `/system/common/lib/` on your PS4. Put it in `system_lib/` next to the executable. To save disk space, you can instead use `libSceNgs2.ngspak` or `libSceNgs2_compact.ngspak`. The port verifies SHA-256 and expands the container in memory while preparing `boot-linked.bin`, before ELF parsing and relocations; code remains expanded while the game runs. If both a raw `.sprx` and `.ngspak` are present, the raw `.sprx` takes priority.
 
 **How to build the folder:**
 1. In Itemzflow, dump the game (`CUSA03627`) and the update (`CUSA03627-patch`) to an exFAT USB drive.
@@ -116,7 +116,7 @@ Everything comes from **your own** PS4 (GoldHEN + Itemzflow). None of it is in t
 ### How to play
 
 1. Extract the package anywhere (on Windows, outside the .zip).
-2. Put `libSceNgs2.sprx` in the `system_lib/` folder next to the executable (optional: without it, the port uses its own audio mixer, still experimental).
+2. Put `libSceNgs2.sprx` or `libSceNgs2_compact.ngspak` in the `system_lib/` folder next to the executable (optional: without either, the port uses its own audio mixer, still experimental).
 3. Open **The Last Guardian** (`The Last Guardian.exe` on Windows).
    - On Windows, if "Windows protected your PC" appears, click *More info*, then *Run anyway*. The program is not digitally signed.
 4. Under **Game folder**, choose the folder that has `eboot.bin`.
