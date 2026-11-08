@@ -18,6 +18,7 @@ import re
 import struct
 from prepare import parse_self, span, unpack
 from link_libc import encode_id
+from ngs2_pack_reader import MAGIC as NGS2_PACK_MAGIC, unpack_ngs2_container
 
 DEFAULT_MODULES = ('libc.prx', 'libSceFios2.prx')
 
@@ -27,8 +28,20 @@ def canonical(identity, fallback=None):
     return f'{identity[0]}#{identity[1][0]}' if identity else fallback
 
 
+def read_module_source(path):
+    """Read a raw SELF/ELF or expand a verified NGS2SPK container before native linking."""
+    container = path.read_bytes()
+    if container.startswith(NGS2_PACK_MAGIC):
+        source = unpack_ngs2_container(container)
+        print(f"NGS2 pack: {path.name}: {len(container):,} -> {len(source):,} bytes (SHA-256 verified)")
+        return source
+    if path.suffix.lower() == '.ngspak':
+        raise ValueError(f'{path}: .ngspak file has no valid NGS2SPK signature')
+    return container
+
+
 def module(path):
-    source = path.read_bytes()
+    source = read_module_source(path)
     elf, header, ph, _, missing = parse_self(source)
     dp = next(p for p in ph if p['type'] == 2)
     dynamic = []
