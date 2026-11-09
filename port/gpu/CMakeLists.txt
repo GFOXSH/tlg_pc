@@ -2,6 +2,17 @@
 # drivers, adapted to the native_probe runtime through shims in shim/.
 cmake_minimum_required(VERSION 3.24)
 project(tlggpu LANGUAGES C CXX)
+
+# Keep bundled dependencies on modern policy behavior with current CMake releases.
+if (POLICY CMP0077)
+    cmake_policy(SET CMP0077 NEW)
+endif()
+if (POLICY CMP0167)
+    cmake_policy(SET CMP0167 NEW)
+endif()
+if (POLICY CMP0218)
+    cmake_policy(SET CMP0218 NEW)
+endif()
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -112,13 +123,34 @@ if (NOT WIN32)
 endif()
 find_package(miniz QUIET)
 if (NOT miniz_FOUND)
-    set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-    set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
-    set(BUILD_FUZZERS OFF CACHE BOOL "" FORCE)
-    set(BUILD_SHARED_LIBS OFF)
-    set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
-    add_subdirectory(third_party/miniz EXCLUDE_FROM_ALL)
-    unset(CMAKE_POLICY_VERSION_MINIMUM)
+    # The bundled miniz CMakeLists still targets CMake 3.5 and resets CMP0077.
+    # Declare its small static target here instead of entering that legacy subproject;
+    # this keeps the same sources, generated export header and public static define.
+    include(GenerateExportHeader)
+    add_library(miniz STATIC
+        third_party/miniz/miniz.c
+        third_party/miniz/miniz_zip.c
+        third_party/miniz/miniz_tinfl.c
+        third_party/miniz/miniz_tdef.c
+    )
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/third_party/miniz")
+    generate_export_header(miniz
+        EXPORT_FILE_NAME "${CMAKE_CURRENT_BINARY_DIR}/third_party/miniz/miniz_export.h")
+    target_include_directories(miniz PUBLIC
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/miniz>"
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/third_party/miniz>"
+    )
+    target_compile_definitions(miniz INTERFACE MINIZ_STATIC_DEFINE)
+    target_compile_definitions(miniz PRIVATE
+        "$<$<C_COMPILER_ID:GNU>:_GNU_SOURCE>")
+    if (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(miniz PRIVATE
+            -Wshadow -Wformat=2 -Wall -Wno-overlength-strings -pedantic)
+    endif()
+    set_target_properties(miniz PROPERTIES
+        C_STANDARD 90
+        C_STANDARD_REQUIRED ON
+    )
     add_library(miniz::miniz ALIAS miniz)
 endif()
 find_package(Zydis QUIET)

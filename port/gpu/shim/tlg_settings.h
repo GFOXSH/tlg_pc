@@ -74,6 +74,10 @@ struct Values {
     std::atomic<bool> texture_cleanup{false};
     /// Preserve images whose only valid contents are still on the GPU until memory is critical.
     std::atomic<bool> keep_gpu_textures{true};
+    /// Release sparse buffer backing when guest memory is unmapped (live).
+    std::atomic<bool> arena_release{true};
+    /// Follow the driver's current memory budget for texture GC, never below startup thresholds.
+    std::atomic<bool> gc_live_budget{true};
     /// Set by the HavokScript bridge when GameSetupTbl ends a stage load.
     std::atomic<bool> stage_loaded{false};
     // Startup: run.py turns them into patches and environment variables; "Apply and restart".

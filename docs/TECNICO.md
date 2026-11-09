@@ -315,7 +315,7 @@ O áudio usa a imagem libSceNgs2 V5 do bundle estático; não existe opção par
 | Opção | Padrão TLG | O que faz |
 |---|---|---|
 | `TLG_READBACKS` | `2` (Precise) | sincronização GPU→CPU; o TLG precisa do 2 (`AsyncMap`); `1` = Relaxed (crash na entrada do gameplay) |
-| `TLG_GC_BUDGET_MB` | `5600` | orçamento do cache de texturas em MB (6 GB de VRAM); ex.: `7000` para 8 GB |
+| `TLG_GC_BUDGET_MB` | `7000` | orçamento do cache de texturas em MB; 8 GB+: `7000`, 6 GB: ~`5600`, 4 GB: ~`3700` (detectado pelo launcher) |
 | `TLG_UPSCALER` | `off` | `off`, `fsr3`, `taa`… (os upscalers do port de GoW3 causam tremor no TLG) |
 | `TLG_JITTER` / `TLG_OBJECT_MOTION` | `0` / `0` | jitter de câmera e motion vectors para upscalers temporais |
 | `TLG_PIPELINE_BINARIES` | `0` | cache `VK_KHR_pipeline_binary` (trava no NVIDIA 595) |

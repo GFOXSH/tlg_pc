@@ -11,8 +11,10 @@ Shared by the command line (run_tlg.sh -> `tlg_run.py [seconds]`) and the launch
   3. tlg-probe runs with its output in out/logs/run-<date>.log (last_run.log points to it).
 """
 import datetime
+import glob
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -28,6 +30,97 @@ USER_DIR = PORT_DIR / 'user'
 LOG_DIR = OUT_DIR / 'logs'
 PROBE = OUT_DIR / ('tlg-probe.exe' if os.name == 'nt' else 'tlg-probe')
 KEEP_LOGS = 30
+
+
+# VRAM budget policy. This target uses a small Tk launcher rather than the upstream
+# backports-table UI, so keep the budget calculation/detection here without Qt dependencies.
+BUDGET_DEFAULT = 7000
+BUDGET_MIN, BUDGET_MAX = 2000, 24000
+
+
+def suggested_budget_mb(vram_gb):
+    """Texture-cache budget in MB: 7000 for 8 GB+, scaled down for smaller cards."""
+    value = min(BUDGET_DEFAULT, 5600 * float(vram_gb) / 6)
+    return int(min(max(round(value / 100) * 100, BUDGET_MIN), BUDGET_MAX))
+
+
+def _parse_nvidia_vram(text):
+    values = [int(value) for value in re.findall(r'^\s*(\d+)\s*$', text or '', re.M)]
+    return max(values) if values else None
+
+
+def _read_amdgpu_vram():
+    sizes = []
+    for path in glob.glob('/sys/class/drm/card*/device/mem_info_vram_total'):
+        try:
+            sizes.append(int(Path(path).read_text(encoding='ascii').strip()))
+        except (OSError, ValueError):
+            pass
+    return max(sizes) // (1024 * 1024) if sizes else None
+
+
+def _parse_vulkan_vram(text):
+    best = {}
+    name = ''
+    size = None
+    local = False
+    in_heap = False
+
+    def finish_heap():
+        if in_heap and size and local:
+            best[name] = max(best.get(name, 0), size)
+
+    for line in (text or '').splitlines():
+        device = re.match(r'\s*deviceName\s*=\s*(.+?)\s*$', line)
+        if device:
+            finish_heap()
+            name, size, local, in_heap = device.group(1), None, False, False
+            continue
+        if re.match(r'\s*memoryHeaps\[\d+\]:', line):
+            finish_heap()
+            size, local, in_heap = None, False, True
+            continue
+        if not in_heap:
+            continue
+        match = re.match(r'\s*size\s*=\s*(\d+)', line)
+        if match and size is None:
+            size = int(match.group(1))
+        elif 'MEMORY_HEAP_DEVICE_LOCAL_BIT' in line:
+            local = True
+        elif re.match(r'\s*memoryTypes\[', line) or re.match(r'\s*memoryHeapCount', line):
+            finish_heap()
+            size, local, in_heap = None, False, False
+    finish_heap()
+    return max(best.values()) // (1024 * 1024) if best else None
+
+
+def detect_vram_mb(timeout=15):
+    """Detect VRAM via nvidia-smi, AMD sysfs, then Vulkan device-local heaps."""
+    flags = {
+        'stdin': subprocess.DEVNULL,
+        'capture_output': True,
+        'text': True,
+        'timeout': timeout,
+        'creationflags': getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+    }
+    try:
+        result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=memory.total', '--format=csv,noheader,nounits'],
+            **flags)
+        value = _parse_nvidia_vram(result.stdout)
+        if value:
+            return value
+    except (OSError, subprocess.SubprocessError):
+        pass
+    value = _read_amdgpu_vram()
+    if value:
+        return value
+    try:
+        result = subprocess.run([os.environ.get('TLG_VULKANINFO', 'vulkaninfo')], **flags)
+        return _parse_vulkan_vram(result.stdout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
 
 # Game language: the engine's own ids (NOT the PS4 system ones), looked up through
 # sceSystemServiceParamGetInt(LANG). Each CUSA ships a subset of them; an id it does not ship
@@ -55,7 +148,7 @@ DEFAULT_ENV = {
     'TLG_PIPELINE_BINARIES': '0',  # VK_KHR_pipeline_binary crashes on the NVIDIA 595 driver
     'TLG_READBACKS': '2',          # the game reads GPU compute results on the CPU (AsyncMap)
     'TLG_READBACK_LINEAR': '1',    # small/linear render targets back to the CPU: auto exposure (#38, #40)
-    'TLG_GC_BUDGET_MB': '5000',    # 5000 MB for cards with 6 GB VRAM or more
+    'TLG_GC_BUDGET_MB': '7000',    # current upstream default; smaller cards get a lower detected budget
     'TLG_UPSCALER': 'off',         # native image: GoW3's temporal upscalers made it shake
     'TLG_JITTER': '0',
     'TLG_OBJECT_MOTION': '0',
@@ -87,7 +180,7 @@ DEFAULT_SETTINGS = {
     'show_fps': False,
     'display_mode': 'Windowed',    # Windowed | Borderless | Fullscreen (tlg.ini)
     'vsync': True,
-    'vram_budget_mb': 5000,
+    'vram_budget_mb': 7000,
     'keep_gpu_textures': True,
     # Mouse and keyboard (tlg.ini; the in-game menu's Controls tab changes the mouse ones too).
     'mouse_enabled': True,
@@ -181,14 +274,23 @@ def load_settings():
     if not settings.get('readback_defaults_2026_10'):
         settings.pop('deferred_readback', None)
         settings['readback_defaults_2026_10'] = True
-    # Once (issue #104): budgets above 5000 only let old textures accumulate; lower them once.
-    # Keep lower values for small VRAM cards, and do not clamp a choice made after this migration.
+    # Once (2026-10): cap legacy budgets at the then-current 7000 MB default, preserving
+    # lower values chosen for smaller cards.
     if not settings.get('budget_default_2026_10'):
         try:
-            settings['vram_budget_mb'] = min(int(settings['vram_budget_mb']), 5000)
+            settings['vram_budget_mb'] = min(int(settings['vram_budget_mb']),
+                                             DEFAULT_SETTINGS['vram_budget_mb'])
         except (TypeError, ValueError):
-            settings['vram_budget_mb'] = 5000
+            settings['vram_budget_mb'] = DEFAULT_SETTINGS['vram_budget_mb']
         settings['budget_default_2026_10'] = True
+    # Once (2026-11): move old 5000 MB and former-default 7000 MB settings to the current
+    # detected-card recommendation. Explicit non-default budgets remain untouched.
+    if not settings.get('budget_default_2026_11'):
+        if settings.get('vram_budget_mb') in (5000, DEFAULT_SETTINGS['vram_budget_mb']):
+            vram = detect_vram_mb()
+            settings['vram_budget_mb'] = (suggested_budget_mb(vram / 1024) if vram
+                                          else DEFAULT_SETTINGS['vram_budget_mb'])
+        settings['budget_default_2026_11'] = True
     # The in-game menu may have changed the mouse since: tlg.ini wins for those keys.
     ini = read_ini(USER_DIR / 'tlg.ini')
     try:
