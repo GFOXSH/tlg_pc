@@ -55,7 +55,7 @@ DEFAULT_ENV = {
     'TLG_PIPELINE_BINARIES': '0',  # VK_KHR_pipeline_binary crashes on the NVIDIA 595 driver
     'TLG_READBACKS': '2',          # the game reads GPU compute results on the CPU (AsyncMap)
     'TLG_READBACK_LINEAR': '1',    # small/linear render targets back to the CPU: auto exposure (#38, #40)
-    'TLG_GC_BUDGET_MB': '5600',    # texture cache budget for 6 GB of VRAM
+    'TLG_GC_BUDGET_MB': '5000',    # 5000 MB for cards with 6 GB VRAM or more
     'TLG_UPSCALER': 'off',         # native image: GoW3's temporal upscalers made it shake
     'TLG_JITTER': '0',
     'TLG_OBJECT_MOTION': '0',
@@ -87,7 +87,8 @@ DEFAULT_SETTINGS = {
     'show_fps': False,
     'display_mode': 'Windowed',    # Windowed | Borderless | Fullscreen (tlg.ini)
     'vsync': True,
-    'vram_budget_mb': 5600,
+    'vram_budget_mb': 5000,
+    'keep_gpu_textures': True,
     # Mouse and keyboard (tlg.ini; the in-game menu's Controls tab changes the mouse ones too).
     'mouse_enabled': True,
     'mouse_sensitivity': 1.0,
@@ -180,9 +181,19 @@ def load_settings():
     if not settings.get('readback_defaults_2026_10'):
         settings.pop('deferred_readback', None)
         settings['readback_defaults_2026_10'] = True
+    # Once (issue #104): budgets above 5000 only let old textures accumulate; lower them once.
+    # Keep lower values for small VRAM cards, and do not clamp a choice made after this migration.
+    if not settings.get('budget_default_2026_10'):
+        try:
+            settings['vram_budget_mb'] = min(int(settings['vram_budget_mb']), 5000)
+        except (TypeError, ValueError):
+            settings['vram_budget_mb'] = 5000
+        settings['budget_default_2026_10'] = True
     # The in-game menu may have changed the mouse since: tlg.ini wins for those keys.
     ini = read_ini(USER_DIR / 'tlg.ini')
     try:
+        if 'keep_gpu_textures' in ini:
+            settings['keep_gpu_textures'] = ini['keep_gpu_textures'] != '0'
         if 'mouse_enabled' in ini:
             settings['mouse_enabled'] = ini['mouse_enabled'] != '0'
         if 'mouse_invert_y' in ini:
@@ -456,6 +467,7 @@ def build_env(settings, extra=None):
         if setting_key in settings and bool(settings[setting_key]) != default and env_key not in os.environ:
             env[env_key] = '1' if settings[setting_key] else '0'
     env['TLG_GC_BUDGET_MB'] = os.environ.get('TLG_GC_BUDGET_MB', str(int(settings['vram_budget_mb'])))
+    env['TLG_KEEP_GPU_TEXTURES'] = os.environ.get('TLG_KEEP_GPU_TEXTURES', '1' if settings.get('keep_gpu_textures', True) else '0')
     stick_keys = dict(DEFAULT_STICK_KEYS)
     configured_stick_keys = settings.get('stick_keys')
     if isinstance(configured_stick_keys, dict):

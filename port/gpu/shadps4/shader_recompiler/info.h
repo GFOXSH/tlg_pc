@@ -25,6 +25,12 @@ struct Archive;
 
 namespace Shader {
 
+/// tlg: shader recipes (video_core/renderer_vulkan/shader_recipe.h). While set, every guest memory
+/// read of the compiler on this thread is reported (size 0: a program, its length found by
+/// decoding), and a set replay_flat replaces the walk of the resource tables.
+inline thread_local void (*guest_read_hook)(const void* address, size_t size) = nullptr;
+inline thread_local const std::vector<u32>* replay_flat = nullptr;
+
 enum class Qualifier : u8 {
     None,
     Smooth,
@@ -207,14 +213,41 @@ struct Info : InfoPersistent {
         return *reinterpret_cast<const T*>(&FlatUserData()[sharp_idx]);
     }
 
+    // spartanport: missing pointer pairs and low table addresses leave no vertex input to fetch.
+    bool UdPointerNull(u32 ptr_index) const noexcept {
+        if (ptr_index == IR::NumScalarRegs) {
+            return false;
+        }
+        const auto ud = UserData();
+        if (ptr_index >= ud.size() || ud.size() - ptr_index < 2) {
+            return true;
+        }
+        u64 pointer;
+        std::memcpy(&pointer, &ud[ptr_index], sizeof(pointer));
+        return (pointer & 0xFFFFFFFFFFFFULL) < 0x10000;
+    }
+
     template <typename T>
     T ReadUdReg(u32 ptr_index, u32 dword_offset) const noexcept {
-        T data;
+        // spartanport: null or short user data reads as an empty descriptor instead of faulting.
+        T data{};
         const auto ud = UserData();
         const u32* base = ud.data();
         if (ptr_index != IR::NumScalarRegs) {
+            if (ptr_index >= ud.size() || ud.size() - ptr_index < 2) {
+                return data;
+            }
             std::memcpy(&base, &ud[ptr_index], sizeof(base));
             base = reinterpret_cast<const u32*>(VAddr(base) & 0xFFFFFFFFFFFFULL);
+            if (VAddr(base) < 0x10000) {
+                return data;
+            }
+        } else if (dword_offset > ud.size() ||
+                   sizeof(T) > (ud.size() - dword_offset) * sizeof(u32)) {
+            return data;
+        }
+        if (guest_read_hook && ptr_index != IR::NumScalarRegs) [[unlikely]] {
+            guest_read_hook(base + dword_offset, sizeof(T));
         }
         std::memcpy(&data, base + dword_offset, sizeof(T));
         return data;
@@ -238,6 +271,11 @@ struct Info : InfoPersistent {
     }
 
     void RefreshFlatBuf() {
+        if (replay_flat) [[unlikely]] {
+            flattened_ud_buf = *replay_flat;
+            flattened_ud_buf.resize(srt_info.flattened_bufsize_dw);
+            return;
+        }
         flattened_ud_buf.resize(srt_info.flattened_bufsize_dw);
         ASSERT(user_data.size() <= NUM_USER_DATA_REGS);
         std::memcpy(flattened_ud_buf.data(), user_data.data(), user_data.size_bytes());
@@ -251,6 +289,10 @@ struct Info : InfoPersistent {
         auto buf = ReadUdReg<AmdGpu::Buffer>(static_cast<u32>(tess_consts_ptr_base),
                                              static_cast<u32>(tess_consts_dword_offset));
         VAddr tess_constants_addr = buf.base_address;
+        if (guest_read_hook) [[unlikely]] {
+            guest_read_hook(reinterpret_cast<const void*>(tess_constants_addr),
+                            sizeof(tess_constants));
+        }
         memcpy(&tess_constants,
                reinterpret_cast<TessellationDataConstantBuffer*>(tess_constants_addr),
                sizeof(tess_constants));

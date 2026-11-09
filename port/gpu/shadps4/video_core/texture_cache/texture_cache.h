@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <deque>
 #include "video_core/texture_cache/readback_queue.h"
 #include "video_core/texture_cache/readback_sources.h"
 #include <chrono>
@@ -425,6 +426,8 @@ private:
     void ReportMemory();
     void GarbageCollectSamplers();
     void CleanUpAfterLoad();
+    /// tlg (#38): frees tiny images (<= TLG_GC_SMALL_BYTES) unused for TLG_GC_SMALL_AGE_MS.
+    void SweepSmallImages();
 
 private:
     const Vulkan::Instance& instance;
@@ -445,7 +448,7 @@ private:
     u64 total_used_memory = 0;
     u64 gc_evictions = 0, gc_downloads = 0; ///< tlg: pressure report
     std::chrono::steady_clock::time_point gc_report_time{};
-    u64 gc_passes = 0, gc_walked = 0, gc_skip_tiled = 0, gc_skip_unpressured = 0, gc_freed = 0;
+    u64 gc_passes = 0, gc_walked = 0, gc_skip_tiled = 0, gc_skip_unpressured = 0, gc_kept_gpu = 0, gc_freed = 0;
     std::chrono::steady_clock::time_point memory_report_time{};
     /// Stage-load cleanup: remember the LRU cutoff and defer eviction until loading settles.
     bool load_cleanup_pending = false;
@@ -463,6 +466,13 @@ private:
     u64 pressure_gc_samplers = 0;
     u64 critical_gc_samplers = 0;
     u64 gc_tick = 0;
+    /// tlg (#38): the collector's tick (one per submission) and when it ran, every ~50 ms of the
+    /// last 60 s. GcCutoffTick turns a minimum age in milliseconds into a tick.
+    std::deque<std::pair<u64, std::chrono::steady_clock::time_point>> gc_tick_times;
+    u64 GcCutoffTick(std::chrono::steady_clock::time_point now, u32 age_ms) const;
+    u64 gc_floor_skips = 0;
+    std::chrono::steady_clock::time_point small_sweep_time{};
+    u64 small_swept = 0, small_sweep_walked = 0;
     Common::LeastRecentlyUsedCache<ImageId, u64> lru_cache;
     Common::LeastRecentlyUsedCache<u64, u64> sampler_lru_cache;
     const bool readback_linear_images;

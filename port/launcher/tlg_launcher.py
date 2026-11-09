@@ -4656,9 +4656,10 @@ TEXT = {
     'readback_batch_why': ('Off was 2–5 FPS faster than batching in the developer tests (2026-10-23); batching adds fence flushes and a side queue.',
                            'Desligado foi 2–5 FPS mais rápido que o lote nos testes do desenvolvedor (2026-10-23); o lote adiciona sincronizações de fence e uma fila paralela.'),
     'show_fps': ('Show FPS overlay at start (F10 toggles)', 'Mostrar overlay de FPS ao iniciar (F10 alterna)'),
+    'keep_gpu_textures': ('Keep GPU-only textures (recommended)', 'Manter texturas só na GPU (recomendado)'),
     'vram': ('Texture cache budget (MB of VRAM)', 'Orçamento do cache de texturas (MB de VRAM)'),
-    'vram_hint': ('6 GB card: 5600 · 8 GB: 7000 · 12 GB: 10500 · 16 GB: 14000 · 24 GB: 21500. This is video card memory (VRAM), not RAM; never above your card\'s VRAM.',
-                  'Placa de 6 GB: 5600 · 8 GB: 7000 · 12 GB: 10500 · 16 GB: 14000 · 24 GB: 21500. É a memória da placa de vídeo (VRAM), não a RAM; nunca acima da VRAM da placa.'),
+    'vram_hint': ('5000 MB suits every card with 6 GB VRAM or more. Do not set it higher: old textures accumulate and slow down long sessions. Lower it only for smaller cards (4 GB: 3700). This is VRAM, not system RAM.',
+                  '5000 MB serve para placas com 6 GB de VRAM ou mais. Não aumente: texturas antigas se acumulam e deixam sessões longas mais lentas. Reduza apenas em placas menores (4 GB: 3700). É VRAM, não RAM do sistema.'),
     'filters': ('Image filters (live in the in-game menu too, Insert → Image)',
                 'Filtros de imagem (também no menu do jogo, Insert → Imagem)'),
     'smaa': ('SMAA anti-aliasing (smooths edges; the HUD too)', 'Anti-aliasing SMAA (suaviza bordas; o HUD também)'),
@@ -4911,6 +4912,16 @@ class Launcher:
         spin.bind('<FocusOut>', lambda _: self.changed())
         ttk.Label(video, text=self.t('vram_hint'), foreground='#777', wraplength=360).grid(row=4, column=0, columnspan=2, sticky='w')
         self.build_filters(video, 9)
+
+        keep_gpu = tk.BooleanVar(value=bool(self.settings.get('keep_gpu_textures', True)))
+        def keep_gpu_changed():
+            value = bool(keep_gpu.get())
+            self.settings['keep_gpu_textures'] = value
+            tlg_run.USER_DIR.mkdir(parents=True, exist_ok=True)
+            tlg_run.update_ini(tlg_run.USER_DIR / 'tlg.ini', {'keep_gpu_textures': '1' if value else '0'})
+            self.changed()
+        ttk.Checkbutton(video, text=self.t('keep_gpu_textures'), variable=keep_gpu,
+                        command=keep_gpu_changed).grid(row=18, column=0, columnspan=2, sticky='w', pady=2)
 
         log_frame = ttk.LabelFrame(main, text='Log', padding=4)
         log_frame.grid(row=1, column=2, sticky='nsew', **pad)

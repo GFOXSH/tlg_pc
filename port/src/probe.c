@@ -9,6 +9,7 @@
 #include "cpu_check.h"
 #include "isa_rewrite.h"
 #include "gpu/tlggpu.h"
+#include "input_timing.h"
 #if !defined(__x86_64__) || !defined(__GNUC__)
 #error This prototype requires x86-64 GCC or Clang (including MinGW).
 #endif
@@ -26,6 +27,8 @@
 #include <execinfo.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
+#include <sched.h>
+#include <time.h>
 #endif
 
 typedef struct { uint64_t address, size, flags; } Segment;
@@ -46,6 +49,9 @@ static uintptr_t guest_code_end; /* end of the image and its stub areas (emulati
 #endif
 static void isa_report_hook(void) { isa_rewrite_report(isa_table, stdout); }
 int vulkan_smoke(void);
+/* tlg: shader recipes, gpu/shadps4/video_core/renderer_vulkan/shader_recipe.cpp */
+int tlg_import_shaders(const char *cache_dir, const char *recipe_dir);
+int tlg_compare_meta(const char *dir_a, const char *dir_b);
 
 static void fail(const char *message) { fprintf(stderr, "ERROR: %s\n", message); exit(1); }
 static uint64_t read64(FILE *f) {
@@ -555,7 +561,61 @@ static void install_lua_hook(Segment *segments, uint64_t count) {
 mismatch:
     printf("Lua hook: unavailable (code signature mismatch)\n");
 }
+/* Host helpers for the guest patches below (both platforms). */
+static uint32_t host_thread_id(void) {
 #ifdef _WIN32
+    return (uint32_t)GetCurrentThreadId();
+#else
+    return (uint32_t)syscall(SYS_gettid);
+#endif
+}
+static uint64_t host_ticks_ms(void) {
+#ifdef _WIN32
+    return GetTickCount64();
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+#endif
+}
+static void host_sleep_ms(unsigned ms) {
+#ifdef _WIN32
+    Sleep(ms);
+#else
+    if (ms) usleep(ms * 1000);
+    else sched_yield();
+#endif
+}
+
+/* Button and stick hold counts at any frame rate (input_timing.h); TLG_INPUT_TIMING=0 is off. */
+static void install_input_timing(Segment *segments, uint64_t count) {
+    const char *enabled = getenv("TLG_INPUT_TIMING");
+    if (enabled && !strcmp(enabled, "0")) return;
+    for (size_t i = 0; i < sizeof(tlg_input_code) / sizeof(tlg_input_code[0]); ++i) {
+        const TlgInputCode *code = &tlg_input_code[i];
+        if (!mapped(segments, count, code->address, code->size) ||
+            tlg_input_fnv(image + code->address, code->size) != code->fnv) {
+            printf("Input timing: unavailable (code signature mismatch at 0x%x)\n", code->address);
+            return;
+        }
+    }
+    unsigned char *stubs = allocate(page_size);
+    unsigned char entry[TLG_INPUT_ENTRY_SIZE], copy[TLG_INPUT_COPY_SIZE];
+    if (!tlg_input_rel_branch(entry, (uintptr_t)(image + TLG_INPUT_UPDATE),
+            (uintptr_t)(stubs + TLG_INPUT_ENTRY_RELAY), sizeof(entry), 0) ||
+        !tlg_input_rel_branch(copy, (uintptr_t)(image + TLG_INPUT_COPY),
+            (uintptr_t)(stubs + TLG_INPUT_COPY_RELAY), sizeof(copy), 1)) {
+        printf("Input timing: unavailable (outside relative-jump range)\n");
+        return;
+    }
+    tlg_input_build_stubs(stubs, image + TLG_INPUT_UPDATE,
+                          (uintptr_t)tlg_input_update, (uintptr_t)tlg_input_copy);
+    protect(stubs, page_size, 5);
+    tlg_input_configure((TlgInputUpdate)(stubs + TLG_INPUT_TRAMPOLINE));
+    memcpy(image + TLG_INPUT_UPDATE, entry, sizeof(entry));
+    memcpy(image + TLG_INPUT_COPY, copy, sizeof(copy));
+    printf("Input timing: ready (button and stick hold counts at the 30 FPS pace)\n");
+}
 
 /* Bind guard (the load crash family, 2026-10-28; TLG_BIND_GUARD: 1 fix, the default; 2 log only;
  * 0 off). A job ({ptr, flags} entries at +0x88, count +0x90) binds what its entries borrow into
@@ -711,7 +771,7 @@ static ABI void bind_guard_consume(void *context, void *packet) {
     bind_guard_check(packet);
     bind_consume_next(context, packet);
     static uint64_t last;
-    const uint64_t now = GetTickCount64();
+    const uint64_t now = host_ticks_ms();
     if (now - last < 10000) return;
     last = now;
     const int64_t a = __atomic_load_n(&bind_counts[0], __ATOMIC_RELAXED), c = __atomic_load_n(&bind_counts[1], __ATOMIC_RELAXED);
@@ -777,7 +837,7 @@ static unsigned reinit_depth;   /* nested takes by the owner */
 static int64_t reinit_waits;
 
 static ABI void reinit_lock(void) {
-    const uint32_t self = (uint32_t)GetCurrentThreadId();
+    const uint32_t self = (uint32_t)host_thread_id();
     if (__atomic_load_n(&reinit_owner, __ATOMIC_RELAXED) == self) {
         ++reinit_depth;
         return;
@@ -790,23 +850,23 @@ static ABI void reinit_lock(void) {
             __builtin_ia32_pause();
             continue;
         }
-        if (!start) start = GetTickCount64();
-        const uint64_t waited = GetTickCount64() - start;
+        if (!start) start = host_ticks_ms();
+        const uint64_t waited = host_ticks_ms() - start;
         if (waited > 1000) {
             printf("Re-init lock: thread %u gave up after %" PRIu64 " ms (held by thread %u), going on without it\n",
                    self, waited, __atomic_load_n(&reinit_owner, __ATOMIC_RELAXED));
             return;
         }
-        Sleep(spin < 1000 ? 0 : 1);
+        host_sleep_ms(spin < 1000 ? 0 : 1);
     }
     if (!start) return;
     const int64_t n = __atomic_add_fetch(&reinit_waits, 1, __ATOMIC_RELAXED);
     if (n <= 20 || !(n % 100))
         printf("Re-init lock: thread %u waited %" PRIu64 " ms for a buffer re-init (%" PRId64 " so far)\n", self,
-               GetTickCount64() - start, n);
+               host_ticks_ms() - start, n);
 }
 static ABI void reinit_unlock(void) {
-    if (__atomic_load_n(&reinit_owner, __ATOMIC_RELAXED) != (uint32_t)GetCurrentThreadId()) return;   /* gave up */
+    if (__atomic_load_n(&reinit_owner, __ATOMIC_RELAXED) != (uint32_t)host_thread_id()) return;   /* gave up */
     if (reinit_depth) {
         --reinit_depth;
         return;
@@ -880,7 +940,7 @@ static void install_reinit_lock(Segment *segments, uint64_t count) {
 mismatch:
     printf("Re-init lock: unavailable (code signature mismatch)\n");
 }
-#endif
+
 
 /* G3PATCH2 (patches.py): the patches' image base, then byte writes at image offsets, applied
  * after relocation. A write may replace a whole base-relative pointer slot (60/90 FPS++ swap
@@ -922,6 +982,7 @@ static void apply_patches(const char *path, Segment *segments, uint64_t ns, cons
  * applied at start). Descriptors are closed first so the old GPU device and its memory are
  * released before the new process opens its own. */
 void runtime_restart(void) {
+    tlggpu_flush_cache();
     fflush(NULL);
 #ifdef _WIN32
     /* run.py sets TLG_RESTART_COMMAND: the launch command line, started again (new patches). */
@@ -985,6 +1046,8 @@ int main(int argc, char **argv) {
     mallopt(M_MMAP_THRESHOLD,32*1024*1024);
 #endif
     if (argc == 2 && !strcmp(argv[1], "--vulkan-only")) return vulkan_smoke();
+    if (argc == 4 && !strcmp(argv[1], "--import-shaders")) return tlg_import_shaders(argv[2], argv[3]);
+    if (argc == 4 && !strcmp(argv[1], "--compare-meta")) return tlg_compare_meta(argv[2], argv[3]);
     char missing[128];
     if (argc == 2 && !strcmp(argv[1], "--cpu-features")) {
         if (!cpu_supported(missing, sizeof missing)) return 20;
@@ -1302,10 +1365,9 @@ int main(int argc, char **argv) {
     }
     if (patch_file) apply_patches(patch_file, segments, ns, relocs, nr);
     if (gpu_enabled) install_lua_hook(segments, ns);
-#ifdef _WIN32
+    if (gpu_enabled) install_input_timing(segments, ns);
     if (gpu_enabled) install_bind_guard(segments, ns);
     if (gpu_enabled) install_reinit_lock(segments, ns);
-#endif
 #ifdef _WIN32
     printf("Guest TCB loads redirected to the TEB TLS slot: %" PRIu64 "\n", patch_tcb_loads(segments, ns));
 #endif

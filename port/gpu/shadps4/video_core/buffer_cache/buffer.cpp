@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <array>
+#include <atomic>
 #include <cstdlib>
 #include <numeric>
 #include <string_view>
@@ -131,8 +133,50 @@ void UniqueBuffer::Create(vk::BufferCreateInfo& buffer_ci, MemoryType mem_type,
         VkBuffer unsafe_buffer{};
         VkResult result = vmaCreateBuffer(allocator, &buffer_ci_unsafe, &alloc_ci, &unsafe_buffer,
                                           &allocation, out_alloc_info);
-        ASSERT_MSG(result == VK_SUCCESS, "Failed allocating buffer with error {} (size {:#x}, memory type {})",
-                   vk::to_string(vk::Result{result}), buffer_ci.size, static_cast<int>(mem_type));
+        if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+            // tlg: from the SotC port (@Lucas-blip-png, thanks): drivers reported failed
+            // 24-96 MiB DeviceLocal buffers with the budget far from used. Try a
+            // block-suballocated buffer, then system memory, before the assertion ends the game
+            // (a slow buffer beats a crash).
+            VmaAllocationCreateInfo retry_ci = alloc_ci;
+            retry_ci.flags &= ~(VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT |
+                                VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT);
+            result = vmaCreateBuffer(allocator, &buffer_ci_unsafe, &retry_ci, &unsafe_buffer,
+                                     &allocation, out_alloc_info);
+            if (result != VK_SUCCESS) {
+                retry_ci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+                retry_ci.flags |= VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+                result = vmaCreateBuffer(allocator, &buffer_ci_unsafe, &retry_ci, &unsafe_buffer,
+                                         &allocation, out_alloc_info);
+            }
+            if (result == VK_SUCCESS) {
+                static std::atomic<int> logged{0};
+                if (logged.fetch_add(1) < 5) {
+                    LOG_CRITICAL(Render, "Buffer fallback: {} KB {} buffer made without the "
+                                         "first choice (driver reported out of memory)",
+                                 buffer_ci.size >> 10, BufferTypeName(mem_type));
+                }
+            }
+        }
+        if (result != VK_SUCCESS) {
+            // tlg: from the SotC port (@Gabriell-os, thanks): every heap's use and budget in
+            // the log before the assertion, so a report shows which memory ran out.
+            const VkPhysicalDeviceMemoryProperties* props{};
+            vmaGetMemoryProperties(allocator, &props);
+            std::array<VmaBudget, VK_MAX_MEMORY_HEAPS> budgets{};
+            vmaGetHeapBudgets(allocator, budgets.data());
+            for (u32 heap = 0; heap < props->memoryHeapCount; ++heap) {
+                LOG_CRITICAL(Render, "Heap {} ({}): usage {} MB, budget {} MB, ours {} MB", heap,
+                             props->memoryHeaps[heap].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT
+                                 ? "video"
+                                 : "system",
+                             budgets[heap].usage >> 20, budgets[heap].budget >> 20,
+                             budgets[heap].statistics.blockBytes >> 20);
+            }
+        }
+        ASSERT_MSG(result == VK_SUCCESS, "Failed allocating {} buffer of {} KB with error {}",
+                   BufferTypeName(mem_type), buffer_ci.size >> 10,
+                   vk::to_string(vk::Result{result}));
         buffer = vk::Buffer{unsafe_buffer};
     } else {
         buffer_ci.flags |=
@@ -155,10 +199,19 @@ Buffer::Buffer(const Vulkan::Instance& instance, VAddr cpu_addr_, u64 size_bytes
     : cpu_addr{cpu_addr_}, size_bytes{size_bytes_}, mem_type{mem_type_},
       buffer{instance.GetDevice(), instance.GetAllocator()} {
 
+    // tlg: when the readback queue lives in another family than the graphics queue (AMD and
+    // Intel report a single graphics queue), both families touch these buffers, so they are
+    // created with concurrent sharing instead of an ownership transfer per copy.
+    const std::array<u32, 2> share_families = {instance.GetGraphicsQueueFamilyIndex(),
+                                               instance.GetReadbackQueueFamilyIndex()};
+    const bool cross_family = instance.IsReadbackCrossFamily();
     vk::BufferCreateInfo buffer_ci = {
         .size = size_bytes,
         .usage = AllFlags,
-        .sharingMode = vk::SharingMode::eExclusive,
+        .sharingMode = cross_family ? vk::SharingMode::eConcurrent
+                                    : vk::SharingMode::eExclusive,
+        .queueFamilyIndexCount = cross_family ? 2u : 0u,
+        .pQueueFamilyIndices = cross_family ? share_families.data() : nullptr,
     };
     VmaAllocationInfo alloc_info{};
     buffer.Create(buffer_ci, mem_type, &alloc_info);

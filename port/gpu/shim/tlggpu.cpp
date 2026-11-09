@@ -31,6 +31,7 @@
 #include "core/memory.h"
 #include "core/signals.h"
 #include "sdl_window.h"
+#include "video_core/cache_storage.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 
 extern "C" {
@@ -89,8 +90,25 @@ public:
     }
 };
 
+static std::atomic<Vulkan::Rasterizer*> g_discard_rasterizer{nullptr};
+// The guest is about to overwrite this range (memset, memcpy): skip what the GPU left in the whole
+// pages inside it.
+extern "C" void tlggpu_discard_overwrite(void* dst, std::uint64_t size) {
+    auto* r = g_discard_rasterizer.load(std::memory_order_acquire);
+    if (!r) {
+        return;
+    }
+    const std::uint64_t addr = reinterpret_cast<std::uint64_t>(dst);
+    const std::uint64_t first = (addr + 4095) & ~std::uint64_t{4095};
+    const std::uint64_t last = (addr + size) & ~std::uint64_t{4095};
+    if (last > first && r->HasGpuData(first, last - first)) {
+        r->DiscardForOverwrite(first, last - first);
+    }
+}
+
 void MemoryManager::SetRasterizer(Vulkan::Rasterizer* rasterizer_) {
     rasterizer = rasterizer_;
+    g_discard_rasterizer.store(rasterizer_, std::memory_order_release);
     // Existing guest mappings are replayed by the runtime when hooks are installed.
     runtime_memory_set_gpu_hooks(
         [](uintptr_t address, uint64_t size) {
@@ -135,6 +153,18 @@ void MemoryManager::CopySparseMemory(VAddr source, u8* dest, u64 size) {
         const u64 offset = i * Chunk;
         CopySparseSerial(source + offset, dest + offset, std::min(Chunk, size - offset));
     });
+}
+bool MemoryManager::TryCopySparseMemory(VAddr source, u8* dest, u64 size) {
+    for (VAddr at = source; at < source + size;) {
+        uintptr_t start = 0, end = 0;
+        int mapped = 0;
+        if (!runtime_memory_region(at, &start, &end, &mapped) || !mapped || end <= at) {
+            return false;
+        }
+        at = end;
+    }
+    CopySparseSerial(source, dest, size);
+    return true;
 }
 bool MemoryManager::TryWriteBacking(void* address, const void* data, u64 size) {
     TlgWriteLog::Note(reinterpret_cast<uintptr_t>(address), data, size, TlgWriteLog::Backing);
@@ -215,6 +245,22 @@ static void StartProfileWriter() {
 }
 #endif
 
+extern "C" void tlggpu_flush_cache(void) {
+    const char* env = std::getenv("TLG_CACHE_FLUSH_ON_EXIT");
+    static const bool enabled = !(env && env[0] == '0');
+    auto& cache = Storage::DataBase::Instance();
+    if (!enabled || !cache.IsOpened()) {
+        return;
+    }
+    const auto start = std::chrono::steady_clock::now();
+    const bool done = cache.Flush(std::chrono::seconds(2));
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - start)
+                        .count();
+    std::printf("GPU cache: exit flush %s in %lld ms\n", done ? "complete" : "timed out",
+                static_cast<long long>(ms));
+}
+
 extern "C" int tlggpu_init(const TlgGpuConfig* config) {
     TlgSettings::Load();
 #ifdef TLG_PGO_GENERATE
@@ -243,6 +289,7 @@ extern "C" int tlggpu_init(const TlgGpuConfig* config) {
         }
         LOG_INFO(Frontend, "Window closed by user");
         runtime_report();
+        tlggpu_flush_cache();
         std::fflush(stdout);
         std::_Exit(0);
     });
