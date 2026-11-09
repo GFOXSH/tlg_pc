@@ -8,6 +8,7 @@
 #include <xxhash.h>
 #include "video_core/renderer_vulkan/ui_composition.h"
 #include "tlg_toggles.h"
+#include "tlg_settings.h"
 #include "video_core/renderer_vulkan/vk_frame_capture.h"
 #include "common/debug.h"
 #include "core/debug_state.h"
@@ -1464,9 +1465,7 @@ void Rasterizer::OnSubmit() {
         fault_process_pending = false;
         buffer_cache.ProcessFaultBuffer();
     }
-    // tlg (issue #38): cold arena memory goes back at the submit point (SotC port, @Oussama268).
-    buffer_cache.MaybeEvictCold(std::chrono::steady_clock::now());
-    texture_cache.ProcessDownloadImages();
+        texture_cache.ProcessDownloadImages();
     texture_cache.RunGarbageCollector();
     runtime.TickFrame();
 }
@@ -3249,15 +3248,8 @@ bool Rasterizer::HasGpuData(VAddr addr, u64 size) {
 void Rasterizer::UnmapMemory(VAddr addr, u64 size) {
     DrainDrawPipe();
     buffer_cache.InvalidateMemory(addr, size);
-    // tlg (issue #38): give the arena memory back; it runs on the GPU thread, ordered before
-    // later draws, after ReleaseMemory finished the GPU work that may still use it (the
-    // device-lost fix). From the SotC port (@AjncSystem, @Oussama268, thanks).
-    // TLG_ARENA_RELEASE=0: never released (the old behaviour).
-    static const bool release_enabled = [] {
-        const char* v = std::getenv("TLG_ARENA_RELEASE");
-        return !v || v[0] != '0';
-    }();
-    if (release_enabled) {
+    // Live in-game setting; ReleaseMemory waits for earlier GPU work before sparse unbind.
+    if (TlgSettings::Get().arena_release.load(std::memory_order_relaxed)) {
         liverpool->SendCommand<false>([this, addr, size] {
             DrainDrawPipe();
             buffer_cache.ReleaseMemory(addr, size);
