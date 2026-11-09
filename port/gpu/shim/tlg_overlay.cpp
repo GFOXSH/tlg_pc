@@ -453,6 +453,9 @@ void PerformanceTab() {
                     "FPS onde o jogo tinha caído para 57 após 28 carregamentos, mas num teste mais longo o jogo "
                     "ainda ficou mais lento após muitos carregamentos (issue #20), então por enquanto vem desligado. "
                     "Desligado é o comportamento original do emulador."));
+        CheckRow(TL("Keep GPU-only textures", "Manter texturas só na GPU"), s.keep_gpu_textures,
+                 TL("Do not evict an image when its only valid contents are on the GPU. It is kept until video memory reaches the critical limit.",
+                    "Não descarta uma imagem quando seu único conteúdo válido está na GPU. Ela é mantida até a memória de vídeo atingir o limite crítico."));
         CheckRow(TL("Compile new shaders in the background", "Compilar shaders novos em segundo plano"), s.async_shaders,
                  TL("Fewer stutters in new areas; an object or effect may appear a moment later.", "Menos engasgos em áreas novas; um objeto ou efeito pode aparecer um instante depois."));
         ImGui::EndTable();

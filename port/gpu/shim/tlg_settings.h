@@ -72,6 +72,8 @@ struct Values {
     std::atomic<int> readback_batch{0};
     /// Free textures no longer used after a stage/checkpoint load (live, off by default).
     std::atomic<bool> texture_cleanup{false};
+    /// Preserve images whose only valid contents are still on the GPU until memory is critical.
+    std::atomic<bool> keep_gpu_textures{true};
     /// Set by the HavokScript bridge when GameSetupTbl ends a stage load.
     std::atomic<bool> stage_loaded{false};
     // Startup: run.py turns them into patches and environment variables; "Apply and restart".

@@ -15,17 +15,19 @@
 
 #include <condition_variable>
 #include <cstdlib>
+// spartanport: callbacks report write exceptions instead of hiding them in unused futures.
+#include <exception>
 #include <functional>
-#include <future>
 #include <mutex>
 #include <queue>
 
 namespace {
 
-std::mutex submit_mutex{};
-u32 num_requests{};
+// spartanport: one mutex guards queued and active writes, avoiding a racing request count.
 std::condition_variable_any request_cv{};
-std::queue<std::packaged_task<void()>> req_queue{};
+std::condition_variable idle_cv{};
+std::queue<std::function<void()>> req_queue{};
+bool io_busy{};
 std::mutex m_request{};
 
 mz_zip_archive zip_ar{};
@@ -84,7 +86,7 @@ void PruneOtherRevisions(const std::filesystem::path& cache_path) {
     std::error_code ec;
     for (const auto& entry : std::filesystem::directory_iterator(cache_path.parent_path(), ec)) {
         const auto other = entry.path().filename().string();
-        if (entry.is_directory(ec) && other != name &&
+        if (entry.is_directory(ec) && other != name && other != serial + "-recipes" &&
             (other == serial || other.rfind(serial + "-", 0) == 0)) {
             LOG_INFO(Render, "Removing shader cache of another recompiler revision: {}", other);
             std::filesystem::remove_all(entry.path(), ec);
@@ -107,36 +109,38 @@ std::filesystem::path GameCacheDir() {
 #endif
 }
 
+std::filesystem::path RecipeDir() {
+    const char* env = std::getenv("TLG_SHADER_RECIPES");
+    if ((env && *env == '0') || EmulatorSettings.IsPipelineCacheArchived() ||
+        EmulatorSettings.IsDirectMemoryAccessEnabled()) {
+        return {};
+    }
+    return Common::FS::GetUserPath(Common::FS::PathType::CacheDir) /
+           (std::string{Common::ElfInfo::Instance().GameSerial()} + "-recipes");
+}
+
 void ProcessIO(const std::stop_token& stoken) {
     Common::SetCurrentThreadName("shadPS4:PipelineCacheIO");
 
-    while (!stoken.stop_requested()) {
+    // spartanport: a stop drains accepted writes; idle includes the callback currently running.
+    for (;;) {
+        std::function<void()> request;
         {
-            std::unique_lock lk{submit_mutex};
-            Common::CondvarWait(request_cv, lk, stoken, [&] { return num_requests; });
-        }
-
-        if (stoken.stop_requested()) {
-            break;
-        }
-
-        while (num_requests) {
-            std::packaged_task<void()> request{};
-            {
-                std::scoped_lock lock{m_request};
-                if (req_queue.empty()) {
-                    continue;
-                }
-                request = std::move(req_queue.front());
-                req_queue.pop();
+            std::unique_lock lk{m_request};
+            io_busy = false;
+            idle_cv.notify_all();
+            Common::CondvarWait(request_cv, lk, stoken, [&] { return !req_queue.empty(); });
+            if (req_queue.empty()) {
+                return;
             }
-
-            if (request.valid()) {
-                request();
-                request.get_future().wait();
-            }
-
-            --num_requests;
+            request = std::move(req_queue.front());
+            req_queue.pop();
+            io_busy = true;
+        }
+        try {
+            request();
+        } catch (const std::exception& e) {
+            LOG_ERROR(Render, "Cache write failed: {}", e.what());
         }
     }
 }
@@ -154,6 +158,9 @@ constexpr std::string GetBlobFileExtension(BlobType type) {
     }
     case BlobType::ShaderProfile: {
         return "bin";
+    }
+    case BlobType::ShaderInput: {
+        return "in";
     }
     default:
         UNREACHABLE();
@@ -188,8 +195,20 @@ void DataBase::Open() {
         MigrateLegacyCache(cache_path);
         PruneOtherRevisions(cache_path);
 #endif
-        if (!std::filesystem::exists(cache_path)) {
-            std::filesystem::create_directories(cache_path);
+        // spartanport: disable caching on directory errors so startup does not throw.
+        std::error_code error;
+        std::filesystem::create_directories(cache_path, error);
+        if (error) {
+            LOG_WARNING(Render, "Shader cache unavailable at {}: {}", cache_path.string(),
+                        error.message());
+            return;
+        }
+        recipe_path = RecipeDir();
+        if (!recipe_path.empty()) {
+            std::filesystem::create_directories(recipe_path, error);
+            if (error) {
+                recipe_path.clear();
+            }
         }
     }
 
@@ -214,10 +233,20 @@ void DataBase::Close() {
     LOG_INFO(Render, "Cache dumped");
 }
 
+// spartanport: bound exit waits without joining a worker that may be blocked on disk IO.
+bool DataBase::Flush(std::chrono::milliseconds timeout) {
+    if (!IsOpened()) {
+        return true;
+    }
+    std::unique_lock lk{m_request};
+    return idle_cv.wait_for(lk, timeout, [] { return req_queue.empty() && !io_busy; });
+}
+
 template <typename T>
 bool WriteVector(const BlobType type, std::filesystem::path&& path_, std::vector<T>&& v) {
     {
-        auto request = std::packaged_task<void()>{[=]() {
+        // spartanport: move the payload into the queue to avoid copying it on the GPU thread.
+        std::function<void()> request = [type, path_ = std::move(path_), v = std::move(v)]() {
             auto path{path_};
             path.replace_extension(GetBlobFileExtension(type));
             if (EmulatorSettings.IsPipelineCacheArchived()) {
@@ -229,7 +258,7 @@ bool WriteVector(const BlobType type, std::filesystem::path&& path_, std::vector
                 }
             } else {
                 // tlg: write beside and rename into place, so a game that ends during the
-                // write (the queue is not drained at exit) never leaves a truncated blob that
+                // write (an exit flush may time out) never leaves a truncated blob that
                 // the next start would load.
                 using namespace Common::FS;
                 auto temp{path};
@@ -243,13 +272,12 @@ bool WriteVector(const BlobType type, std::filesystem::path&& path_, std::vector
                 std::error_code error;
                 std::filesystem::rename(temp, path, error);
             }
-        }};
+        };
         std::scoped_lock lock{m_request};
         req_queue.emplace(std::move(request));
     }
 
-    std::scoped_lock lk{submit_mutex};
-    ++num_requests;
+    // spartanport: queue insertion and the worker predicate now share m_request.
     request_cv.notify_one();
     return true;
 }
@@ -270,15 +298,34 @@ void LoadVector(BlobType type, std::filesystem::path& path, std::vector<T>& v) {
         v.resize(stat.m_uncomp_size / sizeof(T));
         mz_zip_reader_extract_to_mem(&zip_ar, index, v.data(), stat.m_uncomp_size, 0);
     } else {
+        // spartanport: clear failed loads so partial words and short reads remain cache misses.
+        v.clear();
         const auto file = IOFile{path, FileAccessMode::Read};
-        v.resize(file.GetSize() / sizeof(T));
-        file.Read(v);
+        if (!file.IsOpen()) {
+            return;
+        }
+        const auto bytes = file.GetSize();
+        if (bytes % sizeof(T) != 0) {
+            return;
+        }
+        v.resize(bytes / sizeof(T));
+        if (file.Read(v) != v.size()) {
+            v.clear();
+            return;
+        }
     }
 }
 
 bool DataBase::Save(BlobType type, const std::string& name, std::vector<u8>&& data) {
     if (!opened) {
         return false;
+    }
+    if (type == BlobType::ShaderInput) {
+        return !recipe_path.empty() && WriteVector(type, recipe_path / name, std::move(data));
+    }
+    if (type == BlobType::PipelineKey && !recipe_path.empty()) {
+        auto copy = data;
+        WriteVector(type, recipe_path / name, std::move(copy));
     }
 
     auto path = EmulatorSettings.IsPipelineCacheArchived() ? std::filesystem::path{name}
