@@ -71,6 +71,15 @@ class LauncherSettingsTests(unittest.TestCase):
         self.assertEqual(ini['mouse_invert_y'], '1')
         self.assertEqual(ini['key_map'], 'cross=K')
 
+    def test_load_reads_display_settings_updated_by_the_game(self):
+        self.user.mkdir(parents=True)
+        (self.user / 'tlg.ini').write_text(
+            'display_mode=fullscreen\\nvsync=0\\nshow_fps=1\\n', encoding='utf-8')
+        settings = tlg_run.load_settings()
+        self.assertEqual(settings['display_mode'], 'Fullscreen')
+        self.assertFalse(settings['vsync'])
+        self.assertTrue(settings['show_fps'])
+
     def test_ini_update_preserves_comments_and_removes_duplicate_owned_keys(self):
         ini_path = self.user / 'tlg.ini'
         ini_path.parent.mkdir(parents=True)
