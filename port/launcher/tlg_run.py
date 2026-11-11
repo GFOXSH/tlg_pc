@@ -339,6 +339,7 @@ def load_settings():
         schema = int(schema)
     except (TypeError, ValueError):
         schema = 0
+    original_schema = schema
 
     if raw and schema < 1:
         if not raw.get('readback_defaults_2026_10'):
@@ -375,7 +376,7 @@ def load_settings():
     if 'key_map' in ini:
         settings['key_map'] = parse_key_map(ini['key_map'])
 
-    if raw and schema != int(raw.get('settings_schema_version', 0) or 0):
+    if raw and original_schema < 2:
         save_settings(settings)
     return settings
 
@@ -404,7 +405,7 @@ def read_ini(path):
     values = {}
     try:
         for line in path.read_text(encoding='utf-8').splitlines():
-            if '=' in line and not line.lstrip().startswith('#'):
+            if '=' in line and not line.lstrip().startswith(('#', ';')):
                 key, value = line.split('=', 1)
                 values[key.strip()] = value.strip()
     except OSError:
