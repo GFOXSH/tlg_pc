@@ -74,7 +74,7 @@ class LauncherSettingsTests(unittest.TestCase):
     def test_load_reads_display_settings_updated_by_the_game(self):
         self.user.mkdir(parents=True)
         (self.user / 'tlg.ini').write_text(
-            'display_mode=fullscreen\\nvsync=0\\nshow_fps=1\\n', encoding='utf-8')
+            'display_mode=fullscreen\nvsync=0\nshow_fps=1\n', encoding='utf-8')
         settings = tlg_run.load_settings()
         self.assertEqual(settings['display_mode'], 'Fullscreen')
         self.assertFalse(settings['vsync'])
