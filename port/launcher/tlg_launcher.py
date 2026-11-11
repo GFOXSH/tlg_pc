@@ -4989,12 +4989,22 @@ class Launcher:
             child.destroy()
         root = self.root
         root.title(self.t('title'))
-        root.minsize(1120, 800)
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
+        # Use a fixed client area that fits on a 1280x720 desktop, with a little
+        # room for the Windows/Linux window decorations and taskbar.
+        window_width = min(1280, max(760, screen_width - 40))
+        window_height = min(820, max(520, screen_height - 80))
+        x = max(0, (screen_width - window_width) // 2)
+        y = max(0, (screen_height - window_height) // 2)
+        root.geometry(f'{window_width}x{window_height}+{x}+{y}')
+        root.minsize(window_width, window_height)
+        root.maxsize(window_width, window_height)
         root.resizable(False, False)
-        pad = {'padx': 6, 'pady': 4}
-        main = ttk.Frame(root, padding=12)
+        pad = {'padx': 4, 'pady': 3}
+        main = ttk.Frame(root, padding=8)
         main.pack(fill='both', expand=True)
-        for column, weight in enumerate((3, 3, 4)):
+        for column, weight in enumerate((16, 15, 20)):
             main.columnconfigure(column, weight=weight, uniform='cols' if column < 2 else '')
         main.rowconfigure(1, weight=1)
 
@@ -5020,8 +5030,21 @@ class Launcher:
         self.status.grid(sticky='w')
 
         self.vars = {}
-        left = ttk.Frame(main)
-        left.grid(row=0, column=0, rowspan=2, sticky='nsew', **pad)
+        left_view = ttk.Frame(main)
+        left_view.grid(row=0, column=0, rowspan=2, sticky='nsew', **pad)
+        left_view.columnconfigure(0, weight=1)
+        left_view.rowconfigure(0, weight=1)
+        left_canvas = tk.Canvas(left_view, highlightthickness=0, borderwidth=0)
+        left_scroll = ttk.Scrollbar(left_view, orient='vertical', command=left_canvas.yview)
+        left_canvas.configure(yscrollcommand=left_scroll.set)
+        left_canvas.grid(row=0, column=0, sticky='nsew')
+        left_scroll.grid(row=0, column=1, sticky='ns')
+        left = ttk.Frame(left_canvas)
+        left_window = left_canvas.create_window((0, 0), window=left, anchor='nw')
+        left.bind('<Configure>', lambda _event: left_canvas.configure(
+            scrollregion=left_canvas.bbox('all')))
+        left_canvas.bind('<Configure>', lambda event: left_canvas.itemconfigure(
+            left_window, width=event.width))
         left.columnconfigure(0, weight=1)
         ttk.Label(left, image=self.poster, anchor='n').pack(fill='both', expand=True)
         left_settings = ttk.Frame(left)
@@ -5051,12 +5074,56 @@ class Launcher:
         sens_spin.grid(row=2, column=1, sticky='w', padx=6, pady=(4, 0))
         sens_spin.bind('<FocusOut>', lambda _: self.changed())
         ttk.Button(controls, text=self.t('remap'), command=self.remap_dialog).grid(row=2, column=2, sticky='e', pady=(4, 0))
-        ttk.Label(controls, text=self.t('mouse_hint'), foreground='#777', wraplength=420, justify='left').grid(
+        ttk.Label(controls, text=self.t('mouse_hint'), foreground='#777', wraplength=360, justify='left').grid(
             row=3, column=0, columnspan=3, sticky='w', pady=(2, 0))
 
-        middle = ttk.Frame(main)
-        middle.grid(row=1, column=1, sticky='nsew', **pad)
+        middle_view = ttk.Frame(main)
+        middle_view.grid(row=1, column=1, sticky='nsew', **pad)
+        middle_view.columnconfigure(0, weight=1)
+        middle_view.rowconfigure(0, weight=1)
+        middle_canvas = tk.Canvas(middle_view, highlightthickness=0, borderwidth=0)
+        middle_scroll = ttk.Scrollbar(middle_view, orient='vertical',
+                                      command=middle_canvas.yview)
+        middle_canvas.configure(yscrollcommand=middle_scroll.set)
+        middle_canvas.grid(row=0, column=0, sticky='nsew')
+        middle_scroll.grid(row=0, column=1, sticky='ns')
+        middle = ttk.Frame(middle_canvas, padding=4)
+        middle_window = middle_canvas.create_window((0, 0), window=middle, anchor='nw')
+        middle.bind('<Configure>', lambda _event: middle_canvas.configure(
+            scrollregion=middle_canvas.bbox('all')))
+        middle_canvas.bind('<Configure>', lambda event: middle_canvas.itemconfigure(
+            middle_window, width=event.width))
         middle.columnconfigure(0, weight=1)
+
+        def scroll_panels(event):
+            target = root.winfo_containing(event.x_root, event.y_root)
+            canvas = None
+            while target is not None:
+                if target in (left, left_canvas):
+                    canvas = left_canvas
+                    break
+                if target in (middle, middle_canvas):
+                    canvas = middle_canvas
+                    break
+                target = getattr(target, 'master', None)
+            if canvas is None:
+                return
+            if getattr(event, 'num', None) == 4:
+                units = -1
+            elif getattr(event, 'num', None) == 5:
+                units = 1
+            else:
+                units = int(-event.delta / 120)
+                if units == 0 and event.delta:
+                    units = -1 if event.delta > 0 else 1
+            canvas.yview_scroll(units, 'units')
+            return 'break'
+
+        # Scroll only the panel under the pointer; the log keeps its own Text scrollbar.
+        root.bind('<MouseWheel>', scroll_panels)
+        root.bind('<Button-4>', scroll_panels)
+        root.bind('<Button-5>', scroll_panels)
+
         lang = ttk.LabelFrame(middle, text=self.t('language'), padding=8)
         lang.grid(sticky='ew', pady=(0, 8))
         lang.columnconfigure(1, weight=1)
@@ -5074,7 +5141,7 @@ class Launcher:
         ttk.Label(video, text=self.t('fps_hint'), foreground='#777', wraplength=320).grid(
             row=6, column=0, columnspan=2, sticky='w')
         self.combo(video, 7, 'resolution', tlg_run.RESOLUTIONS, lambda k: self.t(f'res_{k}'))
-        ttk.Label(video, text=self.t('resolution_hint'), foreground='#777', wraplength=360,
+        ttk.Label(video, text=self.t('resolution_hint'), foreground='#777', wraplength=340,
                   justify='left').grid(row=8, column=0, columnspan=2, sticky='w', pady=(2, 0))
         ttk.Label(video, text=self.t('vram'), wraplength=220).grid(row=3, column=0, sticky='w', pady=(6, 0))
         vram = tk.IntVar(value=int(self.settings['vram_budget_mb']))
@@ -5083,7 +5150,7 @@ class Launcher:
                            command=self.changed)
         spin.grid(row=3, column=1, sticky='w', padx=6, pady=(6, 0))
         spin.bind('<FocusOut>', lambda _: self.changed())
-        ttk.Label(video, text=self.t('vram_hint'), foreground='#777', wraplength=360).grid(row=4, column=0, columnspan=2, sticky='w')
+        ttk.Label(video, text=self.t('vram_hint'), foreground='#777', wraplength=340).grid(row=4, column=0, columnspan=2, sticky='w')
         self.build_filters(video, 9)
 
         log_frame = ttk.LabelFrame(main, text=self.t('log'), padding=4)
@@ -5119,11 +5186,13 @@ class Launcher:
             self.icon = tk.PhotoImage(file=str(icon))
             self.root.iconphoto(True, self.icon)
         self.poster = tk.PhotoImage(data=POSTER_DATA, format='png')
+        if self.root.winfo_screenheight() <= 800:
+            self.poster = self.poster.subsample(2, 2)
 
     def build_filters(self, parent, row):
         """SMAA, sharpening and color adjustments, read from and written to tlg.ini right away."""
         ttk.Separator(parent).grid(row=row, column=0, columnspan=2, sticky='ew', pady=(8, 4))
-        ttk.Label(parent, text=self.t('filters'), foreground='#555', wraplength=360).grid(
+        ttk.Label(parent, text=self.t('filters'), foreground='#555', wraplength=340).grid(
             row=row + 1, column=0, columnspan=2, sticky='w')
         ini = dict(INI_DEFAULTS)
         ini.update({k: v for k, v in tlg_run.read_ini(tlg_run.USER_DIR / 'tlg.ini').items() if k in ini})
@@ -5226,9 +5295,40 @@ class Launcher:
         win.transient(self.root)
         frame = ttk.Frame(win, padding=8)
         frame.pack(fill='both', expand=True)
-        table = ttk.LabelFrame(frame, text=self.t('binding_group'), padding=8)
-        table.grid(row=0, column=0, sticky='nsew')
         frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(0, weight=1)
+
+        table_view = ttk.Frame(frame)
+        table_view.grid(row=0, column=0, sticky='nsew')
+        table_view.columnconfigure(0, weight=1)
+        table_view.rowconfigure(0, weight=1)
+        table_canvas = tk.Canvas(table_view, highlightthickness=0, borderwidth=0)
+        table_scroll = ttk.Scrollbar(table_view, orient='vertical', command=table_canvas.yview)
+        table_canvas.configure(yscrollcommand=table_scroll.set)
+        table_canvas.grid(row=0, column=0, sticky='nsew')
+        table_scroll.grid(row=0, column=1, sticky='ns')
+        table = ttk.LabelFrame(table_canvas, text=self.t('binding_group'), padding=8)
+        table_window = table_canvas.create_window((0, 0), window=table, anchor='nw')
+        table.bind('<Configure>', lambda _event: table_canvas.configure(
+            scrollregion=table_canvas.bbox('all')))
+        table_canvas.bind('<Configure>', lambda event: table_canvas.itemconfigure(
+            table_window, width=event.width))
+
+        def scroll_table(event):
+            if getattr(event, 'num', None) == 4:
+                units = -1
+            elif getattr(event, 'num', None) == 5:
+                units = 1
+            else:
+                units = int(-event.delta / 120)
+                if units == 0 and event.delta:
+                    units = -1 if event.delta > 0 else 1
+            table_canvas.yview_scroll(units, 'units')
+            return 'break'
+
+        win.bind('<MouseWheel>', scroll_table)
+        win.bind('<Button-4>', scroll_table)
+        win.bind('<Button-5>', scroll_table)
         mapping = dict(self.settings.get('key_map') or {})
         entries = {}
         fixed_mouse = {
@@ -5412,12 +5512,13 @@ class Launcher:
         ttk.Button(bottom, text=self.t('save'), command=save_and_close).grid(
             row=0, column=1, sticky='ew', padx=(4, 0))
         win.update_idletasks()
-        width = min(frame.winfo_reqwidth() + 16, win.winfo_screenwidth() - 20)
-        height = min(frame.winfo_reqheight() + 16, win.winfo_screenheight() - 60)
-        x = max(0, min(win.winfo_screenwidth() - width,
-                       self.root.winfo_rootx() + (self.root.winfo_width() - width) // 2))
-        y = max(0, min(win.winfo_screenheight() - height,
-                       self.root.winfo_rooty() + (self.root.winfo_height() - height) // 2))
+        screen_width = win.winfo_screenwidth()
+        screen_height = win.winfo_screenheight()
+        width = min(max(table.winfo_reqwidth() + 36, 760), screen_width - 40)
+        height = min(max(560, table.winfo_reqheight() + bottom.winfo_reqheight() + 36),
+                     screen_height - 80)
+        x = max(0, (screen_width - width) // 2)
+        y = max(0, (screen_height - height) // 2)
         win.geometry(f'{width}x{height}+{x}+{y}')
 
     def check(self, parent, row, key):
@@ -5493,13 +5594,54 @@ class Launcher:
             return
         win = self.advanced_window = tk.Toplevel(self.root)
         win.title(self.t('advanced_title'))
-        win.resizable(False, False)
         win.transient(self.root)
-        win.minsize(780, 680)
-        frame = ttk.Frame(win, padding=12)
-        frame.pack(fill='both', expand=True)
+        screen_width = win.winfo_screenwidth()
+        screen_height = win.winfo_screenheight()
+        width = min(900, max(700, screen_width - 40))
+        height = min(640, max(480, screen_height - 80))
+        x = max(0, (screen_width - width) // 2)
+        y = max(0, (screen_height - height) // 2)
+        win.geometry(f'{width}x{height}+{x}+{y}')
+        win.resizable(False, False)
+        win.minsize(width, height)
+        win.maxsize(width, height)
+
+        container = ttk.Frame(win, padding=8)
+        container.pack(fill='both', expand=True)
+        container.columnconfigure(0, weight=1)
+        container.rowconfigure(0, weight=1)
+
+        canvas = tk.Canvas(container, highlightthickness=0, borderwidth=0)
+        scrollbar = ttk.Scrollbar(container, orient='vertical', command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.grid(row=0, column=0, sticky='nsew')
+        scrollbar.grid(row=0, column=1, sticky='ns')
+
+        frame = ttk.Frame(canvas, padding=4)
+        frame_window = canvas.create_window((0, 0), window=frame, anchor='nw')
+        frame.bind('<Configure>', lambda _event: canvas.configure(
+            scrollregion=canvas.bbox('all')))
+        canvas.bind('<Configure>', lambda event: canvas.itemconfigure(
+            frame_window, width=event.width))
+
+        def scroll_with_wheel(event):
+            if getattr(event, 'num', None) == 4:
+                units = -1
+            elif getattr(event, 'num', None) == 5:
+                units = 1
+            else:
+                units = int(-event.delta / 120)
+                if units == 0 and event.delta:
+                    units = -1 if event.delta > 0 else 1
+            canvas.yview_scroll(units, 'units')
+            return 'break'
+
+        # Toplevel bindings also receive wheel events over its embedded child widgets.
+        win.bind('<MouseWheel>', scroll_with_wheel)
+        win.bind('<Button-4>', scroll_with_wheel)
+        win.bind('<Button-5>', scroll_with_wheel)
+
         frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(3, weight=1)
         ttk.Label(frame, text=self.t('advanced_hint'), wraplength=740, justify='left').grid(
             row=0, column=0, sticky='ew', pady=(0, 8))
 
@@ -5623,8 +5765,9 @@ class Launcher:
 
         batch.bind('<<ComboboxSelected>>', save_batch)
 
-        bottom = ttk.Frame(frame)
-        bottom.grid(row=5, column=0, sticky='ew', pady=(12, 0))
+        # Keep the action buttons visible while the settings above are scrolled.
+        bottom = ttk.Frame(container)
+        bottom.grid(row=1, column=0, columnspan=2, sticky='ew', pady=(8, 0))
 
         def reset():
             self.settings = tlg_run.reset_advanced_settings(self.settings)
