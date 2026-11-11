@@ -10,6 +10,7 @@ Shared by the command line (run_tlg.sh -> `tlg_run.py [seconds]`) and the launch
   2. the TLG defaults below become TLG_* environment variables (each one validated in play);
   3. tlg-probe runs with its output in out/logs/run-<date>.log (last_run.log points to it).
 """
+import copy
 import datetime
 import glob
 import json
@@ -18,6 +19,7 @@ import re
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 
 import shader_cache
 
@@ -176,7 +178,7 @@ DEFAULT_SETTINGS = {
     # Source tree: the merged game view. Package: the player picks the game folder.
     'game_dir': '' if FROZEN else str(REPO_DIR / 'game' / 'CUSA03627'),
     'game_language': 'pt_BR',
-    'ui_language': 'auto',         # auto | pt_BR | en_US
+    'ui_language': 'auto',         # auto | pt_BR | en_US | ru_RU
     'show_fps': False,
     'display_mode': 'Windowed',    # Windowed | Borderless | Fullscreen (tlg.ini)
     'vsync': True,
@@ -246,16 +248,73 @@ def parse_key_map(spec):
     return keyboard_key_map(mapping)
 
 
-def read_ini(path):
-    values = {}
+def _as_bool(value, default=False):
+    """Parse persisted booleans without treating the string '0' as true."""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() not in ('', '0', 'false', 'no', 'off')
+    return bool(value)
+
+
+def normalize_settings(values):
+    """Return a validated, independent settings snapshot with all public defaults applied."""
+    settings = copy.deepcopy(DEFAULT_SETTINGS)
+    if isinstance(values, dict):
+        settings.update(values)
+
+    for key, default in (('show_fps', False), ('vsync', True), ('keep_gpu_textures', True),
+                         ('mouse_enabled', True), ('mouse_invert_y', False)):
+        settings[key] = _as_bool(settings.get(key), default)
+
+    settings['game_dir'] = str(settings.get('game_dir') or '')
+    settings['game_language'] = str(settings.get('game_language') or 'pt_BR')
+    if settings.get('ui_language') not in ('auto', 'pt_BR', 'en_US', 'ru_RU'):
+        settings['ui_language'] = 'auto'
+    if settings.get('display_mode') not in ('Windowed', 'Borderless', 'Fullscreen'):
+        settings['display_mode'] = 'Windowed'
+    if str(settings.get('frame_rate')) not in FRAME_RATES:
+        settings['frame_rate'] = '30'
+    else:
+        settings['frame_rate'] = str(settings['frame_rate'])
+    if settings.get('resolution') not in RESOLUTIONS:
+        settings['resolution'] = '1080p'
+    if settings.get('draw_pipe') not in ('auto', 'on', 'off'):
+        settings['draw_pipe'] = 'auto'
+
     try:
-        for line in Path(path).read_text(encoding='utf-8').splitlines():
-            key, eq, value = line.partition('=')
-            if eq and not key.startswith('#'):
-                values[key.strip()] = value.strip()
-    except OSError:
-        pass
-    return values
+        settings['vram_budget_mb'] = min(BUDGET_MAX, max(BUDGET_MIN, int(settings['vram_budget_mb'])))
+    except (TypeError, ValueError, OverflowError):
+        settings['vram_budget_mb'] = DEFAULT_SETTINGS['vram_budget_mb']
+    try:
+        settings['mouse_sensitivity'] = min(5.0, max(0.1, float(settings.get('mouse_sensitivity', 1.0))))
+    except (TypeError, ValueError, OverflowError):
+        settings['mouse_sensitivity'] = DEFAULT_SETTINGS['mouse_sensitivity']
+
+    mode = str(settings.get('gpu_readbacks', '2'))
+    if mode not in ('0', '1', '2') or mode == '2':
+        settings.pop('gpu_readbacks', None)
+    else:
+        settings['gpu_readbacks'] = mode
+
+    for key, _env_key, default in READBACK_FLAGS:
+        if key in settings:
+            settings[key] = _as_bool(settings[key], default)
+
+    raw_key_map = settings.get('key_map')
+    settings['key_map'] = keyboard_key_map(raw_key_map if isinstance(raw_key_map, dict) else {})
+    stick_keys = dict(DEFAULT_STICK_KEYS)
+    raw_stick_keys = settings.get('stick_keys')
+    if isinstance(raw_stick_keys, dict):
+        for key, value in raw_stick_keys.items():
+            if key in DEFAULT_STICK_KEYS and isinstance(value, str) and value.strip():
+                stick_keys[key] = value.strip()
+    settings['stick_keys'] = stick_keys
+
+    for key in ('readback_defaults_2026_10', 'budget_default_2026_10', 'budget_default_2026_11'):
+        settings.pop(key, None)
+    settings['settings_schema_version'] = 2
+    return settings
 
 
 def config_path():
@@ -264,61 +323,90 @@ def config_path():
 
 
 def load_settings():
-    settings = dict(DEFAULT_SETTINGS)
+    """Load, migrate and validate launcher preferences, then merge in-game-owned controls."""
+    raw = {}
     try:
-        settings.update(json.loads(config_path().read_text(encoding='utf-8')))
-    except (OSError, ValueError):
+        loaded = json.loads(config_path().read_text(encoding='utf-8'))
+        if isinstance(loaded, dict):
+            raw = loaded
+    except (OSError, ValueError, TypeError):
         pass
-    # Once: deferred readback became the measured default in October 2026. Drop an older
-    # explicit false value from launchers that stored every switch, defaults included.
-    if not settings.get('readback_defaults_2026_10'):
-        settings.pop('deferred_readback', None)
-        settings['readback_defaults_2026_10'] = True
-    # Once (2026-10): cap legacy budgets at the then-current 7000 MB default, preserving
-    # lower values chosen for smaller cards.
-    if not settings.get('budget_default_2026_10'):
-        try:
-            settings['vram_budget_mb'] = min(int(settings['vram_budget_mb']),
-                                             DEFAULT_SETTINGS['vram_budget_mb'])
-        except (TypeError, ValueError):
-            settings['vram_budget_mb'] = DEFAULT_SETTINGS['vram_budget_mb']
-        settings['budget_default_2026_10'] = True
-    # Once (2026-11): move old 5000 MB and former-default 7000 MB settings to the current
-    # detected-card recommendation. Explicit non-default budgets remain untouched.
-    if not settings.get('budget_default_2026_11'):
-        if settings.get('vram_budget_mb') in (5000, DEFAULT_SETTINGS['vram_budget_mb']):
-            vram = detect_vram_mb()
-            settings['vram_budget_mb'] = (suggested_budget_mb(vram / 1024) if vram
-                                          else DEFAULT_SETTINGS['vram_budget_mb'])
-        settings['budget_default_2026_11'] = True
-    # The in-game menu may have changed the mouse since: tlg.ini wins for those keys.
+
+    settings = copy.deepcopy(DEFAULT_SETTINGS)
+    settings.update(raw)
+    schema = raw.get('settings_schema_version', 0)
+    try:
+        schema = int(schema)
+    except (TypeError, ValueError):
+        schema = 0
+    original_schema = schema
+
+    if raw and schema < 1:
+        if not raw.get('readback_defaults_2026_10'):
+            settings.pop('deferred_readback', None)
+        if not raw.get('budget_default_2026_10'):
+            try:
+                settings['vram_budget_mb'] = min(int(settings['vram_budget_mb']),
+                                                 DEFAULT_SETTINGS['vram_budget_mb'])
+            except (TypeError, ValueError, OverflowError):
+                settings['vram_budget_mb'] = DEFAULT_SETTINGS['vram_budget_mb']
+        schema = 1
+    if raw and schema < 2:
+        if not raw.get('budget_default_2026_11'):
+            try:
+                legacy_budget = int(settings['vram_budget_mb'])
+            except (TypeError, ValueError, OverflowError):
+                legacy_budget = DEFAULT_SETTINGS['vram_budget_mb']
+            if legacy_budget in (5000, DEFAULT_SETTINGS['vram_budget_mb']):
+                vram = detect_vram_mb()
+                settings['vram_budget_mb'] = (suggested_budget_mb(vram / 1024) if vram
+                                              else DEFAULT_SETTINGS['vram_budget_mb'])
+        schema = 2
+
+    settings = normalize_settings(settings)
     ini = read_ini(USER_DIR / 'tlg.ini')
-    try:
-        if 'keep_gpu_textures' in ini:
-            settings['keep_gpu_textures'] = ini['keep_gpu_textures'] != '0'
-        if 'mouse_enabled' in ini:
-            settings['mouse_enabled'] = ini['mouse_enabled'] != '0'
-        if 'mouse_invert_y' in ini:
-            settings['mouse_invert_y'] = ini['mouse_invert_y'] != '0'
-        if 'mouse_sensitivity' in ini:
+    display_mode = ini.get('display_mode', '').strip().lower()
+    if display_mode in ('windowed', 'borderless', 'fullscreen'):
+        settings['display_mode'] = display_mode.title()
+    for key in ('vsync', 'show_fps', 'keep_gpu_textures', 'mouse_enabled', 'mouse_invert_y'):
+        if key in ini:
+            settings[key] = _as_bool(ini[key], settings[key])
+    if 'mouse_sensitivity' in ini:
+        try:
             settings['mouse_sensitivity'] = min(5.0, max(0.1, float(ini['mouse_sensitivity'])))
-    except ValueError:
-        pass
-    settings['key_map'] = keyboard_key_map(settings.get('key_map') or {})
+        except (TypeError, ValueError, OverflowError):
+            pass
     if 'key_map' in ini:
         settings['key_map'] = parse_key_map(ini['key_map'])
+
+    if raw and original_schema < 2:
+        save_settings(settings)
     return settings
 
-
 def save_settings(settings):
+    """Atomically persist normalized preferences and synchronize their tlg.ini counterparts."""
+    normalized = normalize_settings(settings)
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                mode='w', encoding='utf-8', dir=path.parent,
+                prefix=path.name + '.', suffix='.tmp', delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(normalized, stream, indent=2, ensure_ascii=False)
+            stream.write('\n')
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    sync_settings_to_ini(normalized)
+    return normalized
 
 
 def check_game(game_dir):
-    """Problems that keep the game from starting, as (key, detail) pairs; empty means ready."""
-    game = Path(game_dir)
+    """Return startup blockers as (translation_key, detail) pairs; an empty list means ready."""
+    game = Path(game_dir or '')
     problems = []
     if not (game / 'eboot.bin').is_file():
         problems.append(('missing', 'eboot.bin'))
@@ -332,13 +420,12 @@ def check_game(game_dir):
         problems.append(('not_built', str(PROBE)))
     return problems
 
-
 def read_ini(path):
     """The key=value pairs of tlg.ini (empty when the file does not exist yet)."""
     values = {}
     try:
         for line in path.read_text(encoding='utf-8').splitlines():
-            if '=' in line and not line.lstrip().startswith('#'):
+            if '=' in line and not line.lstrip().startswith(('#', ';')):
                 key, value = line.split('=', 1)
                 values[key.strip()] = value.strip()
     except OSError:
@@ -346,18 +433,75 @@ def read_ini(path):
     return values
 
 
-def update_ini(path, values):
-    """Sets keys in tlg.ini (the in-game menu's file), keeping every other line."""
-    lines = path.read_text(encoding='utf-8').splitlines() if path.is_file() else ['# tlg settings']
-    seen = set()
-    for i, line in enumerate(lines):
-        key = line.split('=', 1)[0].strip()
-        if key in values:
-            lines[i] = f'{key}={values[key]}'
-            seen.add(key)
-    lines += [f'{k}={v}' for k, v in values.items() if k not in seen]
-    path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+def _atomic_write_text(path, content):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                mode='w', encoding='utf-8', dir=path.parent,
+                prefix=path.name + '.', suffix='.tmp', delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(content)
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
+
+def update_ini(path, values):
+    """Update selected tlg.ini keys, preserving comments and unrelated settings."""
+    path = Path(path)
+    try:
+        lines = path.read_text(encoding='utf-8').splitlines()
+    except OSError:
+        lines = ['# tlg settings']
+
+    output = []
+    written = set()
+    for line in lines:
+        stripped = line.lstrip()
+        if not stripped or stripped.startswith(('#', ';')) or '=' not in line:
+            output.append(line)
+            continue
+        key = line.split('=', 1)[0].strip()
+        if key not in values:
+            output.append(line)
+        elif key not in written:
+            output.append(f'{key}={values[key]}')
+            written.add(key)
+
+    output.extend(f'{key}={value}' for key, value in values.items() if key not in written)
+    _atomic_write_text(path, '\n'.join(output) + '\n')
+
+
+def sync_settings_to_ini(settings):
+    """Persist launcher-owned live controls in the same file used by the in-game menu."""
+    settings = normalize_settings(settings)
+    update_ini(USER_DIR / 'tlg.ini', {
+        'display_mode': settings['display_mode'].lower(),
+        'vsync': int(settings['vsync']),
+        'show_fps': int(settings['show_fps']),
+        'keep_gpu_textures': int(settings['keep_gpu_textures']),
+        'mouse_enabled': int(settings['mouse_enabled']),
+        'mouse_sensitivity': f"{settings['mouse_sensitivity']:.2f}",
+        'mouse_invert_y': int(settings['mouse_invert_y']),
+        'key_map': key_map_spec(settings['key_map']),
+    })
+
+
+def reset_advanced_settings(settings):
+    """Reset every Advanced-dialog option, including its tlg.ini-backed GPU settings."""
+    reset = dict(settings)
+    reset.pop('gpu_readbacks', None)
+    reset.pop('draw_pipe', None)
+    reset.pop('keep_gpu_textures', None)
+    for key, _env_key, _default in READBACK_FLAGS:
+        reset.pop(key, None)
+    normalized = normalize_settings(reset)
+    save_settings(normalized)
+    update_ini(USER_DIR / 'tlg.ini', {'readback_batch': '0'})
+    return normalized
 
 # The serial the GPU backend names this game's shader cache after (another region's copy: its
 # param.sfo TITLE_ID, read from the game folder).
@@ -579,7 +723,9 @@ def build_env(settings, extra=None):
         env.setdefault(f'TLG_{action.upper()}', key)
     env['TLG_LANGUAGE'] = os.environ.get('TLG_LANGUAGE', str(
         game_languages(settings.get('game_dir')).get(settings['game_language'], 1)))
-    if settings.get('ui_language', 'auto') != 'auto':
+    # The in-game overlay currently supports only Portuguese and English. A Russian
+    # launcher must not pass ru_RU here: the runtime treats every non-English value as Portuguese.
+    if settings.get('ui_language') in ('pt_BR', 'en_US'):
         env['TLG_UI_LANG'] = settings['ui_language']
     env['TLG_CONFIG'] = str(USER_DIR / 'tlg.ini')
     # Window name and app id (matches tlg-pc.desktop for Alt+Tab and the dock) and icon.
@@ -639,15 +785,8 @@ def launch(settings, seconds=0, extra_env=None):
     """Writes the in-game settings, starts the game; returns (process, log path).
     The process's combined output is a text pipe; the caller copies it to the log."""
     USER_DIR.mkdir(parents=True, exist_ok=True)
-    update_ini(USER_DIR / 'tlg.ini', {
-        'display_mode': str(settings['display_mode']).lower(),  # the game's keys: windowed|borderless|fullscreen
-        'vsync': int(bool(settings['vsync'])),
-        'show_fps': int(bool(settings['show_fps'])),
-        'mouse_enabled': int(bool(settings.get('mouse_enabled', True))),
-        'mouse_sensitivity': f"{float(settings.get('mouse_sensitivity', 1.0)):.2f}",
-        'mouse_invert_y': int(bool(settings.get('mouse_invert_y', False))),
-        'key_map': key_map_spec(settings.get('key_map') or {}),
-    })
+    settings = normalize_settings(settings)
+    save_settings(settings)
     log = new_log()
     cmd = [str(PROBE), str(OUT_DIR / 'boot-linked.bin'), '--app0', settings['game_dir'],
            '--user', str(USER_DIR), '--content-profile', str(OUT_DIR / 'content.bin'),
