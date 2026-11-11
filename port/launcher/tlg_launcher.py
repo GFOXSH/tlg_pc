@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""The Last Guardian launcher (Tkinter, Linux and Windows), in pt_BR and en_US.
+"""The Last Guardian launcher (Tkinter, Linux and Windows), in en_US, pt_BR and ru_RU.
 
 Game folder, game and interface language, display, FPS overlay, VRAM budget and native audio;
 Play starts the game through tlg_run.py (the same code path as run_tlg.sh) and shows its log.
@@ -4714,7 +4714,162 @@ TEXT = {
                 'O jogo fechou com erro (código {code}). Os detalhes estão no log.'),
     'already': ('The game is already running.', 'O jogo já está rodando.'),
     'error': ('Error', 'Erro'),
+    'log': ('Log', 'Log'),
+    'action': ('Action', 'Ação'),
+    'key': ('Key', 'Tecla'),
+    'mouse': ('Mouse', 'Mouse'),
+    'mouse_left': ('Mouse left button', 'Botão esquerdo do mouse'),
+    'mouse_right': ('Mouse right button', 'Botão direito do mouse'),
+    'wheel_down': ('Wheel down', 'Roda para baixo'),
+    'wheel_up': ('Wheel up', 'Roda para cima'),
+    'walk_forward': ('Walk forward', 'Andar para frente'),
+    'walk_left': ('Walk left', 'Andar para a esquerda'),
+    'walk_backward': ('Walk backward', 'Andar para trás'),
+    'walk_right': ('Walk right', 'Andar para a direita'),
+    'camera_up': ('Camera up', 'Câmera para cima'),
+    'camera_left': ('Camera left', 'Câmera para a esquerda'),
+    'camera_down': ('Camera down', 'Câmera para baixo'),
+    'camera_right': ('Camera right', 'Câmera para a direita'),
 }
+
+TEXT_RU = {
+    'title': "The Last Guardian — PC",
+    'game': "Игра",
+    'game_dir': "Папка с игрой",
+    'browse': "Обзор…",
+    'language': "Язык",
+    'game_language': "Язык игры (озвучка и текст)",
+    'ui_language': "Язык интерфейса",
+    'auto': "Автоматически (язык системы)",
+    'video': "Видео",
+    'display_mode': "Режим экрана",
+    'Windowed': "В окне",
+    'Borderless': "Окно без рамки",
+    'Fullscreen': "Полный экран",
+    'vsync': "Вертикальная синхронизация (VSync)",
+    'frame_rate': "Частота кадров (экспериментально)",
+    'fps_30': "30 кадр/с (как на PS4)",
+    'fps_60': "60 кадр/с",
+    'fps_unlocked': "Без ограничения (до частоты монитора)",
+    'fps_hint': "Патч для 60 кадр/с и снятия ограничения применяется к eboot 1.03 в памяти; подробности: docs/60fps.md",
+    'resolution': "Разрешение рендеринга",
+    'res_360p': "360p",
+    'res_720p': "720p",
+    'res_1080p': "1080p (исходное)",
+    'res_1440p': "1440p (2K)",
+    'res_4k': "4K (2160p)",
+    'resolution_hint': "Изменяет в памяти таблицу режимов проверенной версии eboot 1.03. 1080p — исходное разрешение рендеринга PS4; другое разрешение применяется только при совпадении ожидаемых байтов кода и данных.",
+    'draw_pipe': "Многопоточный конвейер отрисовки",
+    'draw_pipe_auto': "Автоматически (рекомендуется)",
+    'draw_pipe_on': "Включено",
+    'draw_pipe_off': "Выключено",
+    'draw_pipe_hint': "Автоматический режим сохраняет эвристику runtime (сейчас она зависит от числа доступных потоков процессора). Режимы «Включено» и «Выключено» принудительно задают TLG_DRAW_PIPE=1 или 0. Изменение вступит в силу при следующем запуске игры.",
+    'advanced': "Дополнительно…",
+    'advanced_title': "Расширенные настройки GPU",
+    'advanced_hint': "Эти параметры управляют тем, как CPU получает данные, записанные GPU. Не меняйте значения по умолчанию без необходимости диагностики конкретной сцены. Параметры чтения данных GPU, режим конвейера отрисовки, а также патчи частоты кадров и разрешения применяются при запуске игры. Пакетное чтение сохраняется в tlg.ini и также меняется в игровом меню «Производительность». Графические профили не меняют эти параметры. Значения производительности получены в тестах разработчика и не гарантируют такой же результат на каждом ПК и в каждой сцене.",
+    'gpu_readbacks': "Режим чтения данных GPU",
+    'gpu_readbacks_hint': "Определяет, как синхронизируется чтение CPU данных, записанных GPU.",
+    'gpu_readbacks_why': "Игра читает на CPU результаты вычислений GPU. Точный режим необходим, чтобы избежать устаревших данных; ослабленный режим может вернуть старые данные, а выключение отключает защиту чтения. Рекомендуется оставить «Точный».",
+    'readbacks_2': "Точный",
+    'readbacks_1': "Ослабленный",
+    'readbacks_0': "Выключено",
+    'mark_default': "По умолчанию: {value}",
+    'mark_on': "Включено",
+    'mark_off': "Выключено",
+    'deferred_readback': "Отложенное чтение данных GPU",
+    'deferred_readback_hint': "Ожидание выполняет только поток, которому нужны результаты GPU, а не вся GPU.",
+    'deferred_readback_why': "В трёх тестовых маршрутах измерен прирост 3–6% FPS (2026-10-26). Отключайте только для проверки, не связана ли неисправность сцены с отложенным чтением.",
+    'fast_read_fault': "Пропуск чтения неизменённой памяти",
+    'rb_hot': "Предварительное чтение недавно запрошенных областей GPU",
+    'rb_hot_hint': "Когда чтение уже ожидает завершения работы GPU, в ту же передачу включаются недавно запрошенные области того же буферного сегмента.",
+    'rb_hot_why': "Недавно повторно использованные данные GPU становятся доступными к следующему чтению CPU. Страницы, изменённые CPU, пропускаются; объём дополнительного предварительного чтения ограничен 64 КиБ на область.",
+    'fast_read_fault_hint': "Чтение CPU из памяти, в которую GPU не записывала данные, не ожидает потока GPU.",
+    'fast_read_fault_why': "Позволяет не выполнять лишний переход к потоку GPU, если запрошенная область не содержит данных, записанных GPU. Отключение возвращает это ненужное ожидание.",
+    'readback_linear': "Чтение небольших буферов рендеринга",
+    'readback_linear_hint': "Игра использует эти данные для автоматической экспозиции. Отключение может сделать сцены слишком тёмными или слишком яркими.",
+    'readback_linear_why': "Для автоматической экспозиции игре необходимо читать небольшие линейные буферы рендеринга. Отключение может привести к слишком тёмному или пересвеченному изображению на улице (#38, #40).",
+    'stale_readback': "Устаревшие данные GPU",
+    'stale_readback_hint': "При чтении CPU используется последняя опубликованная версия данных GPU без ожидания. Это может нарушить синхронизацию игрового процесса.",
+    'stale_readback_why': "Игровая логика может получить предыдущую версию данных GPU (с задержкой в один кадр). В одном тесте персонаж не успел поймать Трико; для правильной синхронизации оставьте параметр выключенным.",
+    'gc_batch_download': "Пакетная выгрузка вытесненных текстур",
+    'gc_batch_download_hint': "GPU ожидает один раз завершения записи всех вытесненных текстур вместо отдельного ожидания для каждой текстуры.",
+    'gc_batch_download_why': "Для этой игры преимущество пока не измерялось. Оставьте параметр выключенным, пока тест The Last Guardian не подтвердит пользу.",
+    'async_fences': "Асинхронные fences",
+    'async_fences_hint': "Сигнализирует о завершении fences после окончания предшествующих копирований памяти, вместо ожидания.",
+    'async_fences_why': "По результатам измерений работает медленнее (79 против 83 FPS): игра ожидает эти fences, поэтому задержка сигнала снижает пропускную способность.",
+    'readback_batch': "Пакетное чтение данных GPU",
+    'readback_batch_0': "Выключено (рекомендуется)",
+    'readback_batch_16': "16 МБ",
+    'readback_batch_64': "64 МБ (не рекомендуется)",
+    'readback_batch_hint': "При чтении игрой памяти GPU копирует также соседние области, в которые записывала GPU.",
+    'readback_batch_why': "В тестах разработчика режим без пакетирования был на 2–5 FPS быстрее (2026-10-23): пакетирование добавляет сбросы fences и отдельную очередь.",
+    'show_fps': "Показывать FPS при запуске (F10 переключает)",
+    'keep_gpu_textures': "Сохранять текстуры только в памяти GPU (рекомендуется)",
+    'keep_gpu_textures_hint': "Сохранять текстуры, единственная актуальная копия которых находится в памяти GPU, пока не возникнет нехватка VRAM.",
+    'keep_gpu_textures_why': "Сокращает ненужные копирования данных с GPU на CPU и улучшает работу кеша текстур. Отключайте только при диагностике нехватки VRAM или устаревшего содержимого текстур.",
+    'vram': "Бюджет кеша текстур (МБ видеопамяти)",
+    'vram_hint': "7000 МБ подходит для видеокарт с 8 ГБ VRAM и более. Для менее мощных карт бюджет автоматически снижается (6 ГБ: около 5600 МБ; 4 ГБ: около 3700 МБ). Увеличение бюджета не ускоряет игру и оставляет ей меньше видеопамяти. Речь о VRAM, а не об оперативной памяти.",
+    'filters': "Фильтры изображения (также доступны в игровом меню: Insert → Image)",
+    'smaa': "Сглаживание SMAA (сглаживает края, включая элементы интерфейса)",
+    'sharpening': "Резкость",
+    'sharpen_off': "Выключено",
+    'sharpen_rcas': "RCAS (FSR 1)",
+    'sharpen_cas': "CAS (AMD)",
+    'color_adjust': "Коррекция цвета",
+    'color_brightness': "Яркость (0 = без изменений)",
+    'color_contrast': "Контрастность (1 = без изменений)",
+    'color_saturation': "Насыщенность (1 = без изменений)",
+    'color_gamma': "Гамма (1 = без изменений)",
+    'controls': "Управление",
+    'mouse_enabled': "Мышь управляет камерой",
+    'mouse_invert_y': "Инвертировать ось Y мыши",
+    'mouse_sensitivity': "Чувствительность мыши",
+    'mouse_hint': "Нажмите Esc, чтобы освободить мышь; щёлкните в окне игры, чтобы снова захватить её.",
+    'remap': "Назначение клавиш и кнопок мыши…",
+    'remap_title': "Назначение клавиш и кнопок мыши",
+    'binding_group': "Назначения",
+    'set': "Задать",
+    'press': "Нажмите клавишу…",
+    'reset': "Сбросить всё",
+    'save': "Сохранить",
+    'close': "Закрыть",
+    'play': "Играть",
+    'saves': "Папка сохранений",
+    'logs': "Папка журналов",
+    'clear_cache': "Очистить кеш шейдеров",
+    'clear_cache_ask': "Будут удалены скомпилированные шейдеры ({size}); следующий запуск займёт больше времени, а в начале игры возможны рывки. Продолжить?",
+    'clear_cache_empty': "Кеш шейдеров уже пуст.",
+    'clear_cache_done': "Кеш шейдеров очищен: освобождено {size}.",
+    'clear_cache_failed': "Освобождено {size}, но не удалось удалить файлов: {count}. Возможно, они используются. Закройте игру и повторите попытку.",
+    'quit': "Выход",
+    'ready': "Можно запускать игру.",
+    'audio_status': "Аудио: встроенная libSceNgs2 V5.",
+    'missing': "Не найдено",
+    'not_built': "Порт не собран (запустите build.sh)",
+    'preparing': "Подготовка игры…",
+    'running': "Игра запущена — журнал:",
+    'ended': "Игра завершена (код выхода {code}).",
+    'crashed': "Игра завершилась с ошибкой (код {code}). Подробности см. в журнале.",
+    'already': "Игра уже запущена.",
+    'error': "Ошибка",
+    'log': "Журнал",
+    'action': "Действие",
+    'key': "Клавиша",
+    'mouse': "Мышь",
+    'mouse_left': "Левая кнопка",
+    'mouse_right': "Правая кнопка",
+    'wheel_down': "Колесо вниз",
+    'wheel_up': "Колесо вверх",
+    'walk_forward': "Идти вперёд",
+    'walk_left': "Идти влево",
+    'walk_backward': "Идти назад",
+    'walk_right': "Идти вправо",
+    'camera_up': "Камера вверх",
+    'camera_left': "Камера влево",
+    'camera_down': "Камера вниз",
+    'camera_right': "Камера вправо"
+}
+
 CONTRIBUTORS = (
     ('HayatoG', 'https://github.com/HayatoG/tlg_pc'),
     ('tabnul', 'https://github.com/tabnul/tlg_pc/'),
@@ -4727,24 +4882,24 @@ GAME_LANGUAGE_NAMES = {'en': 'English', 'fr': 'Français', 'es_ES': 'Español (E
                        'tr': 'Türkçe', 'ar': 'العربية',
                        'pt_BR': 'Português (Brasil)', 'es_LA': 'Español (Latinoamérica)',
                        'fr_CA': 'Français (Canada)'}
-UI_LANGUAGES = ['auto', 'pt_BR', 'en_US']
-UI_LANGUAGE_NAMES = {'pt_BR': 'Português (Brasil)', 'en_US': 'English (US)'}
+UI_LANGUAGES = ['auto', 'pt_BR', 'en_US', 'ru_RU']
+UI_LANGUAGE_NAMES = {'pt_BR': 'Português (Brasil)', 'en_US': 'English (US)', 'ru_RU': 'Русский'}
 DISPLAY_MODES = ['Windowed', 'Borderless', 'Fullscreen']
 # The PS4 buttons the remap dialog lists and their in-game actions.
 PS4_BUTTONS = [
-    ('cross', 'Cross', ('Crouch', 'Agachar')),
-    ('circle', 'Circle', ('Interact', 'Interagir')),
-    ('square', 'Square', ('Dash / throw', 'Esquivar / arremessar')),
-    ('triangle', 'Triangle', ('Jump', 'Pular')),
-    ('l1', 'L1', ('Find Trico', 'Encontrar Trico')),
-    ('r1', 'R1', ('Call Trico / command', 'Chamar Trico / comando')),
-    ('l2', 'L2', ('Unused', 'Sem uso')), ('r2', 'R2', ('Unused', 'Sem uso')),
-    ('l3', 'L3', ('Hint', 'Dica')), ('r3', 'R3', ('Unused', 'Sem uso')),
-    ('options', 'Options (Menu)', ('Pause', 'Pausa')),
-    ('touchpad_left', 'Touchpad click (left)', ('Unused', 'Sem uso')),
-    ('touchpad_right', 'Touchpad click (right)', ('Unused', 'Sem uso')),
-    ('up', 'D-pad up', ('Inventory', 'Inventário')), ('down', 'D-pad down', ('Inventory', 'Inventário')),
-    ('left', 'D-pad left', ('Inventory', 'Inventário')), ('right', 'D-pad right', ('Inventory', 'Inventário')),
+    ('cross', ('Cross', 'Cross', 'Крест'), ('Crouch', 'Agachar', 'Присесть')),
+    ('circle', ('Circle', 'Circle', 'Круг'), ('Interact', 'Interagir', 'Взаимодействовать')),
+    ('square', ('Square', 'Square', 'Квадрат'), ('Dash / throw', 'Esquivar / arremessar', 'Рывок / бросок')),
+    ('triangle', ('Triangle', 'Triangle', 'Треугольник'), ('Jump', 'Pular', 'Прыжок')),
+    ('l1', ('L1', 'L1', 'L1'), ('Find Trico', 'Encontrar Trico', 'Найти Трико')),
+    ('r1', ('R1', 'R1', 'R1'), ('Call Trico / command', 'Chamar Trico / comando', 'Позвать Трико / команда')),
+    ('l2', ('L2', 'L2', 'L2'), ('Unused', 'Sem uso', 'Не используется')), ('r2', ('R2', 'R2', 'R2'), ('Unused', 'Sem uso', 'Не используется')),
+    ('l3', ('L3', 'L3', 'L3'), ('Hint', 'Dica', 'Подсказка')), ('r3', ('R3', 'R3', 'R3'), ('Unused', 'Sem uso', 'Не используется')),
+    ('options', ('Options (Menu)', 'Options (Menu)', 'Options (меню)'), ('Pause', 'Pausa', 'Пауза')),
+    ('touchpad_left', ('Touchpad click (left)', 'Touchpad click (left)', 'Нажатие тачпада (слева)'), ('Unused', 'Sem uso', 'Не используется')),
+    ('touchpad_right', ('Touchpad click (right)', 'Touchpad click (right)', 'Нажатие тачпада (справа)'), ('Unused', 'Sem uso', 'Не используется')),
+    ('up', ('D-pad up', 'D-pad up', 'Крестовина вверх'), ('Inventory', 'Inventário', 'Инвентарь')), ('down', ('D-pad down', 'D-pad down', 'Крестовина вниз'), ('Inventory', 'Inventário', 'Инвентарь')),
+    ('left', ('D-pad left', 'D-pad left', 'Крестовина влево'), ('Inventory', 'Inventário', 'Инвентарь')), ('right', ('D-pad right', 'D-pad right', 'Крестовина вправо'), ('Inventory', 'Inventário', 'Инвентарь')),
 ]
 # Tk key names -> SDL key names (src/runtime_pad.c reads SDL names); letters and digits are the same.
 TK_TO_SDL = {
@@ -4782,15 +4937,21 @@ COLOR_RANGES = {'color_brightness': (-0.5, 0.5), 'color_contrast': (0.5, 1.5),
                 'color_saturation': (0.0, 2.0), 'color_gamma': (0.5, 2.0)}
 
 
-def system_is_portuguese():
-    for name in ('LC_ALL', 'LC_MESSAGES', 'LANG'):
-        value = os.environ.get(name)
-        if value:
-            return value.lower().startswith('pt')
-    try:
-        return (locale.getlocale()[0] or '').lower().startswith('pt')
-    except ValueError:
-        return False
+def system_ui_language():
+    """Resolve the launcher language from the active system locale."""
+    value = next((os.environ.get(name) for name in ('LC_ALL', 'LC_MESSAGES', 'LANG', 'LANGUAGE')
+                  if os.environ.get(name)), None)
+    if not value:
+        try:
+            value = locale.getlocale()[0] or ''
+        except ValueError:
+            value = ''
+    normalized = str(value).lower().replace('-', '_').split('.', 1)[0].split('@', 1)[0]
+    if normalized.startswith(('ru', 'russian')):
+        return 'ru_RU'
+    if normalized.startswith(('pt', 'portuguese')):
+        return 'pt_BR'
+    return 'en_US'
 
 
 class Launcher:
@@ -4803,13 +4964,23 @@ class Launcher:
         self.root.after(100, self.pump)
 
     # -- language ---------------------------------------------------------------------------
-    def pt(self):
+    def language(self):
         choice = self.settings.get('ui_language', 'auto')
-        return system_is_portuguese() if choice == 'auto' else choice == 'pt_BR'
+        return system_ui_language() if choice == 'auto' else choice
+
+    def pt(self):
+        return self.language() == 'pt_BR'
+
+    def ru(self):
+        return self.language() == 'ru_RU'
 
     def t(self, key, **fmt):
-        en, pt = TEXT[key]
-        return (pt if self.pt() else en).format(**fmt)
+        if self.ru():
+            value = TEXT_RU.get(key, TEXT[key][0])
+        else:
+            en, pt = TEXT[key]
+            value = pt if self.pt() else en
+        return value.format(**fmt)
 
     # -- window -----------------------------------------------------------------------------
     def build(self):
@@ -4915,7 +5086,7 @@ class Launcher:
         ttk.Label(video, text=self.t('vram_hint'), foreground='#777', wraplength=360).grid(row=4, column=0, columnspan=2, sticky='w')
         self.build_filters(video, 9)
 
-        log_frame = ttk.LabelFrame(main, text='Log', padding=4)
+        log_frame = ttk.LabelFrame(main, text=self.t('log'), padding=4)
         log_frame.grid(row=1, column=2, sticky='nsew', **pad)
         self.log = tk.Text(log_frame, wrap='none', font=('TkFixedFont', 9), state='disabled', width=60)
         scroll = ttk.Scrollbar(log_frame, command=self.log.yview)
@@ -4992,7 +5163,7 @@ class Launcher:
 
     def save_settings(self):
         self.settings = tlg_run.normalize_settings(self.settings)
-        self.save_settings()
+        tlg_run.save_settings(self.settings)
 
     def combo(self, parent, row, key, values, label, on_change=None):
         ttk.Label(parent, text=self.t(key)).grid(row=row, column=0, sticky='w')
@@ -5061,8 +5232,8 @@ class Launcher:
         mapping = dict(self.settings.get('key_map') or {})
         entries = {}
         fixed_mouse = {
-            'circle': 'Mouse Left', 'r1': 'Mouse Right',
-            'left': 'Wheel Down', 'right': 'Wheel Up',
+            'circle': self.t('mouse_left'), 'r1': self.t('mouse_right'),
+            'left': self.t('wheel_down'), 'right': self.t('wheel_up'),
         }
         configured_stick_keys = self.settings.get('stick_keys')
         stick_mapping = dict(tlg_run.DEFAULT_STICK_KEYS)
@@ -5075,9 +5246,9 @@ class Launcher:
         }
         disabled_button_keys = set()
         half = (len(PS4_BUTTONS) + 1) // 2
-        for column, heading in ((0, 'Action'), (1, 'Key'), (3, 'Mouse'),
-                                (4, 'Action'), (5, 'Key'), (7, 'Mouse')):
-            ttk.Label(table, text=heading, font=('TkDefaultFont', 9, 'bold')).grid(
+        for column, heading_key in ((0, 'action'), (1, 'key'), (3, 'mouse'),
+                                    (4, 'action'), (5, 'key'), (7, 'mouse')):
+            ttk.Label(table, text=self.t(heading_key), font=('TkDefaultFont', 9, 'bold')).grid(
                 row=0, column=column, sticky='w', padx=(0, 5), pady=(0, 2))
         table.columnconfigure(1, weight=1)
         table.columnconfigure(5, weight=1)
@@ -5167,24 +5338,29 @@ class Launcher:
             win.after(150, lambda: (win.bind('<KeyPress>', key), win.bind('<ButtonPress>', mouse)))
 
         walk_actions = (
-            ('walk_up', 'Walk forward'), ('walk_left', 'Walk left'),
-            ('walk_down', 'Walk backward'), ('walk_right', 'Walk right'),
+            ('walk_up', 'walk_forward'), ('walk_left', 'walk_left'),
+            ('walk_down', 'walk_backward'), ('walk_right', 'walk_right'),
         )
         camera_actions = (
-            ('camera_up', 'Camera up'), ('camera_left', 'Camera left'),
-            ('camera_down', 'Camera down'), ('camera_right', 'Camera right'),
+            ('camera_up', 'camera_up'), ('camera_left', 'camera_left'),
+            ('camera_down', 'camera_down'), ('camera_right', 'camera_right'),
         )
         left_items = [('stick', action, label) for action, label in walk_actions]
         right_items = [('stick', action, label) for action, label in camera_actions]
-        left_items.extend(('button', button, f'{name} — {action[1] if self.pt() else action[0]}')
+        def localized(values):
+            return values[2] if self.ru() else values[1] if self.pt() else values[0]
+
+        left_items.extend(('button', button, f'{localized(name)} — {localized(action)}')
                           for button, name, action in PS4_BUTTONS[:half])
-        right_items.extend(('button', button, f'{name} — {action[1] if self.pt() else action[0]}')
+        right_items.extend(('button', button, f'{localized(name)} — {localized(action)}')
                            for button, name, action in PS4_BUTTONS[half:])
 
         for index, (left_item, right_item) in enumerate(zip(left_items, right_items), start=1):
             for item, column in ((left_item, 0), (right_item, 4)):
                 kind, identifier, label = item
                 row = index
+                if kind == 'stick':
+                    label = self.t(label)
                 ttk.Label(table, text=label).grid(row=row, column=column, sticky='w', padx=(0, 5), pady=0)
                 entry = ttk.Entry(table, width=12 if kind == 'stick' else 14)
                 if kind == 'stick':

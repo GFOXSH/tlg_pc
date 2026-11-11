@@ -178,7 +178,7 @@ DEFAULT_SETTINGS = {
     # Source tree: the merged game view. Package: the player picks the game folder.
     'game_dir': '' if FROZEN else str(REPO_DIR / 'game' / 'CUSA03627'),
     'game_language': 'pt_BR',
-    'ui_language': 'auto',         # auto | pt_BR | en_US
+    'ui_language': 'auto',         # auto | pt_BR | en_US | ru_RU
     'show_fps': False,
     'display_mode': 'Windowed',    # Windowed | Borderless | Fullscreen (tlg.ini)
     'vsync': True,
@@ -269,7 +269,7 @@ def normalize_settings(values):
 
     settings['game_dir'] = str(settings.get('game_dir') or '')
     settings['game_language'] = str(settings.get('game_language') or 'pt_BR')
-    if settings.get('ui_language') not in ('auto', 'pt_BR', 'en_US'):
+    if settings.get('ui_language') not in ('auto', 'pt_BR', 'en_US', 'ru_RU'):
         settings['ui_language'] = 'auto'
     if settings.get('display_mode') not in ('Windowed', 'Borderless', 'Fullscreen'):
         settings['display_mode'] = 'Windowed'
@@ -706,7 +706,9 @@ def build_env(settings, extra=None):
         env.setdefault(f'TLG_{action.upper()}', key)
     env['TLG_LANGUAGE'] = os.environ.get('TLG_LANGUAGE', str(
         game_languages(settings.get('game_dir')).get(settings['game_language'], 1)))
-    if settings.get('ui_language', 'auto') != 'auto':
+    # The in-game overlay currently supports only Portuguese and English. A Russian
+    # launcher must not pass ru_RU here: the runtime treats every non-English value as Portuguese.
+    if settings.get('ui_language') in ('pt_BR', 'en_US'):
         env['TLG_UI_LANG'] = settings['ui_language']
     env['TLG_CONFIG'] = str(USER_DIR / 'tlg.ini')
     # Window name and app id (matches tlg-pc.desktop for Alt+Tab and the dock) and icon.

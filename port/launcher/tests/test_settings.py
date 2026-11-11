@@ -115,6 +115,14 @@ class LauncherSettingsTests(unittest.TestCase):
         self.assertEqual(tlg_run.read_ini(self.user / 'tlg.ini')['readback_batch'], '0')
         self.assertEqual(tlg_run.read_ini(self.user / 'tlg.ini')['keep_gpu_textures'], '1')
 
+    def test_russian_launcher_language_is_preserved_without_mislabeling_runtime_overlay(self):
+        settings = tlg_run.normalize_settings({'ui_language': 'ru_RU'})
+        self.assertEqual(settings['ui_language'], 'ru_RU')
+        with mock.patch.dict('os.environ', {}, clear=True), \
+                mock.patch.object(tlg_run, 'window_icon', return_value=None):
+            env = tlg_run.build_env(settings)
+        self.assertNotIn('TLG_UI_LANG', env)
+
     def test_backend_environment_receives_advanced_and_performance_settings(self):
         settings = tlg_run.normalize_settings({
             'game_dir': '',
