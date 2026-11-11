@@ -4657,6 +4657,8 @@ TEXT = {
                            'Desligado foi 2–5 FPS mais rápido que o lote nos testes do desenvolvedor (2026-10-23); o lote adiciona sincronizações de fence e uma fila paralela.'),
     'show_fps': ('Show FPS overlay at start (F10 toggles)', 'Mostrar overlay de FPS ao iniciar (F10 alterna)'),
     'keep_gpu_textures': ('Keep GPU-only textures (recommended)', 'Manter texturas só na GPU (recomendado)'),
+    'keep_gpu_textures_hint': ('Keep textures whose only valid copy is in GPU memory until VRAM is under pressure.', 'Manter texturas cuja única cópia válida está na memória da GPU até que a VRAM fique sob pressão.'),
+    'keep_gpu_textures_why': ('Reduces unnecessary GPU-to-CPU copies and improves texture-cache behavior. Disable only when diagnosing VRAM pressure or stale texture contents.', 'Evita cópias desnecessárias da GPU para a CPU e melhora o cache de texturas. Desative apenas ao diagnosticar pressão de VRAM ou conteúdo de textura desatualizado.'),
     'vram': ('Texture cache budget (MB of VRAM)', 'Orçamento do cache de texturas (MB de VRAM)'),
     'vram_hint': ('7000 MB suits cards with 8 GB VRAM or more. Smaller cards get a lower detected budget (6 GB: about 5600; 4 GB: about 3700). A higher budget is not faster and leaves less VRAM for the game. This is VRAM, not system RAM.',
                   '7000 MB serve para placas com 8 GB de VRAM ou mais. Placas menores recebem um orçamento detectado mais baixo (6 GB: cerca de 5600; 4 GB: cerca de 3700). Um orçamento maior não é mais rápido e deixa menos VRAM para o jogo. É VRAM, não RAM do sistema.'),
@@ -4913,16 +4915,6 @@ class Launcher:
         ttk.Label(video, text=self.t('vram_hint'), foreground='#777', wraplength=360).grid(row=4, column=0, columnspan=2, sticky='w')
         self.build_filters(video, 9)
 
-        keep_gpu = tk.BooleanVar(value=bool(self.settings.get('keep_gpu_textures', True)))
-        def keep_gpu_changed():
-            value = bool(keep_gpu.get())
-            self.settings['keep_gpu_textures'] = value
-            tlg_run.USER_DIR.mkdir(parents=True, exist_ok=True)
-            tlg_run.update_ini(tlg_run.USER_DIR / 'tlg.ini', {'keep_gpu_textures': '1' if value else '0'})
-            self.changed()
-        ttk.Checkbutton(video, text=self.t('keep_gpu_textures'), variable=keep_gpu,
-                        command=keep_gpu_changed).grid(row=18, column=0, columnspan=2, sticky='w', pady=2)
-
         log_frame = ttk.LabelFrame(main, text='Log', padding=4)
         log_frame.grid(row=1, column=2, sticky='nsew', **pad)
         self.log = tk.Text(log_frame, wrap='none', font=('TkFixedFont', 9), state='disabled', width=60)
@@ -4998,6 +4990,10 @@ class Launcher:
         tlg_run.USER_DIR.mkdir(parents=True, exist_ok=True)
         tlg_run.update_ini(tlg_run.USER_DIR / 'tlg.ini', values)
 
+    def save_settings(self):
+        self.settings = tlg_run.normalize_settings(self.settings)
+        self.save_settings()
+
     def combo(self, parent, row, key, values, label, on_change=None):
         ttk.Label(parent, text=self.t(key)).grid(row=row, column=0, sticky='w')
         names = [label(v) for v in values]
@@ -5008,7 +5004,7 @@ class Launcher:
 
         def picked(_):
             self.settings[key] = values[box.current()]
-            tlg_run.save_settings(self.settings)
+            self.save_settings()
             if on_change:
                 on_change()
             else:
@@ -5028,7 +5024,7 @@ class Launcher:
     def picked_language(self, _=None):
         values = self.game_lang_values
         self.settings['game_language'] = values[self.game_lang_box.current()]
-        tlg_run.save_settings(self.settings)
+        self.save_settings()
         self.refresh_status()
 
     def refresh_language_choices(self):
@@ -5046,7 +5042,7 @@ class Launcher:
         self.game_lang_box.current(values.index(current))
         if current != self.settings.get('game_language'):
             self.settings['game_language'] = current
-            tlg_run.save_settings(self.settings)
+            self.save_settings()
 
     def remap_dialog(self):
         """Remap keyboard stick directions and PS4 buttons."""
@@ -5114,7 +5110,7 @@ class Launcher:
                     entry.insert(0, key)
                 stick_keys[action] = key
             self.settings['stick_keys'] = stick_keys
-            tlg_run.save_settings(self.settings)
+            self.save_settings()
 
         def manually_edited(identifier, stick):
             if stick:
@@ -5231,6 +5227,7 @@ class Launcher:
                 keyboard, _ = split_key_bindings(tlg_run.DEFAULT_KEYS[button])
                 entry.delete(0, 'end')
                 entry.insert(0, keyboard)
+            commit()
         def save_and_close():
             commit()
             win.destroy()
@@ -5260,7 +5257,7 @@ class Launcher:
                 self.settings[key] = var.get()
             except tk.TclError:
                 pass  # spinbox while typing
-        tlg_run.save_settings(self.settings)
+        self.save_settings()
         self.refresh_language_choices()
         self.refresh_status()
 
@@ -5345,7 +5342,7 @@ class Launcher:
                 self.settings.pop('gpu_readbacks', None)
             else:
                 self.settings['gpu_readbacks'] = value
-            tlg_run.save_settings(self.settings)
+            self.save_settings()
 
         mode.bind('<<ComboboxSelected>>', save_mode)
         mode_note = (self.t('gpu_readbacks_hint') + '\n' +
@@ -5369,7 +5366,7 @@ class Launcher:
                 self.settings.pop('draw_pipe', None)
             else:
                 self.settings['draw_pipe'] = value
-            tlg_run.save_settings(self.settings)
+            self.save_settings()
 
         draw_pipe.bind('<<ComboboxSelected>>', save_draw_pipe)
         ttk.Label(draw_frame, text=self.t('draw_pipe_hint'), foreground='#777', wraplength=720,
@@ -5409,11 +5406,25 @@ class Launcher:
                     self.settings.pop(k, None)
                 else:
                     self.settings[k] = v.get()
-                tlg_run.save_settings(self.settings)
+                self.save_settings()
 
             ttk.Checkbutton(cell, text=self.t(key), variable=var, command=toggled).grid(
                 row=0, column=0, sticky='w')
             note(cell, 0, 0, key, default)
+
+        keep_parent, keep_row, keep_column = place(1)
+        keep_cell = ttk.Frame(keep_parent, padding=(4, 2))
+        keep_cell.grid(row=keep_row, column=keep_column, sticky='new', padx=4, pady=2)
+        keep_gpu_var = tk.BooleanVar(value=bool(self.settings.get('keep_gpu_textures', True)))
+        variables['keep_gpu_textures'] = keep_gpu_var
+
+        def keep_gpu_toggled():
+            self.settings['keep_gpu_textures'] = keep_gpu_var.get()
+            self.save_settings()
+
+        ttk.Checkbutton(keep_cell, text=self.t('keep_gpu_textures'), variable=keep_gpu_var,
+                        command=keep_gpu_toggled).grid(row=0, column=0, sticky='w')
+        note(keep_cell, 0, 0, 'keep_gpu_textures', True)
 
         batch_frame = ttk.LabelFrame(frame, text=self.t('readback_batch'), padding=8)
         batch_frame.grid(row=4, column=0, sticky='ew', pady=(8, 0))
@@ -5440,17 +5451,12 @@ class Launcher:
         bottom.grid(row=5, column=0, sticky='ew', pady=(12, 0))
 
         def reset():
-            self.settings.pop('gpu_readbacks', None)
-            self.settings.pop('draw_pipe', None)  # Auto: leave the runtime heuristic in control.
-            self.settings.pop('rb_hot', None)  # reset to the backend default (enabled)
-            for key, _env_key, _default in flags:
-                self.settings.pop(key, None)
-                variables[key].set(_default)
-            tlg_run.save_settings(self.settings)
+            self.settings = tlg_run.reset_advanced_settings(self.settings)
+            for key, _env_key, default in flags:
+                variables[key].set(default)
+            keep_gpu_var.set(True)
             mode.current(0)
             draw_pipe.current(0)
-            tlg_run.USER_DIR.mkdir(parents=True, exist_ok=True)
-            tlg_run.update_ini(ini_path, {'readback_batch': '0'})
             batch.current(0)
 
         ttk.Button(bottom, text=self.t('reset'), command=reset).pack(side='left')
