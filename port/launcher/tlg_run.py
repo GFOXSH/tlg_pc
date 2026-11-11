@@ -365,9 +365,12 @@ def load_settings():
 
     settings = normalize_settings(settings)
     ini = read_ini(USER_DIR / 'tlg.ini')
-    for key in ('keep_gpu_textures', 'mouse_enabled', 'mouse_invert_y'):
+    display_mode = ini.get('display_mode', '').strip().lower()
+    if display_mode in ('windowed', 'borderless', 'fullscreen'):
+        settings['display_mode'] = display_mode.title()
+    for key in ('vsync', 'show_fps', 'keep_gpu_textures', 'mouse_enabled', 'mouse_invert_y'):
         if key in ini:
-            settings[key] = ini[key] != '0'
+            settings[key] = _as_bool(ini[key], settings[key])
     if 'mouse_sensitivity' in ini:
         try:
             settings['mouse_sensitivity'] = min(5.0, max(0.1, float(ini['mouse_sensitivity'])))
