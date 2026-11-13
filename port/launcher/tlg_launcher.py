@@ -20368,9 +20368,9 @@ def system_ui_language():
     return 'en_US'
 
 
-def wrap_labels_on_resize(parent, labels):
+def wrap_labels_on_resize(parent, labels, reserved_width=0):
     def update_wraplength(event):
-        wraplength = max(80, event.width - 24)
+        wraplength = max(80, event.width - 24 - reserved_width)
         for label in labels:
             label.configure(wraplength=wraplength)
 
@@ -20388,6 +20388,7 @@ class ScrollableFrame(ttk.Frame):
             self, highlightthickness=0, background=ttk.Style().lookup('TFrame', 'background'))
         self.scrollbar = ttk.Scrollbar(
             self, orient='vertical', command=self.canvas.yview)
+        self.columnconfigure(1, minsize=self.scrollbar.winfo_reqwidth())
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
         self.canvas.grid(row=0, column=0, sticky='nsew', padx=(0, 8))
         self.scrollbar.grid(row=0, column=1, sticky='ns')
@@ -20613,18 +20614,20 @@ class Launcher:
         self.check(controls, 0, 'mouse_enabled')
         self.check(controls, 1, 'mouse_invert_y')
         sensitivity_label = ttk.Label(controls, text=self.t('mouse_sensitivity'), wraplength=320)
-        sensitivity_label.grid(row=2, column=0, columnspan=3, sticky='w', pady=(4, 0))
+        sensitivity_label.grid(row=2, column=0, sticky='w', pady=(4, 0))
         sens = tk.DoubleVar(value=float(self.settings.get('mouse_sensitivity', 1.0)))
         self.vars['mouse_sensitivity'] = sens
         sens_spin = ttk.Spinbox(controls, from_=0.1, to=5.0, increment=0.1, format='%.2f', textvariable=sens,
                                 width=6, command=self.changed)
-        sens_spin.grid(row=3, column=0, sticky='w', padx=6, pady=(2, 0))
+        sens_spin.grid(row=2, column=1, sticky='e', padx=(6, 0), pady=(4, 0))
         sens_spin.bind('<FocusOut>', lambda _: self.changed())
         mouse_hint = ttk.Label(controls, text=self.t('mouse_hint'), foreground='#777',
                                wraplength=320, justify='left')
-        mouse_hint.grid(row=4, column=0, columnspan=3, sticky='w', pady=(2, 0))
+        mouse_hint.grid(row=3, column=0, columnspan=3, sticky='w', pady=(2, 0))
 
-        wrap_labels_on_resize(controls, (sensitivity_label, mouse_hint))
+        wrap_labels_on_resize(
+            controls, (sensitivity_label,), reserved_width=sens_spin.winfo_reqwidth() + 12)
+        wrap_labels_on_resize(controls, (mouse_hint,))
 
     def _build_middle_column(self, main, pad):
         middle_area = ScrollableFrame(main)
@@ -20641,30 +20644,33 @@ class Launcher:
         video = ttk.LabelFrame(middle, text=self.t('video'), padding=8)
         video.grid(sticky='ew')
         video.columnconfigure(0, weight=1)
+        video.columnconfigure(1, weight=0)
         self.combo(video, 0, 'display_mode', DISPLAY_MODES, lambda k: self.t(k))
         self.check(video, 2, 'vsync')
         self.check(video, 3, 'show_fps')
-        ttk.Label(video, text=self.t('vram'), wraplength=320).grid(
-            row=4, column=0, sticky='w', pady=(6, 0))
+        vram_label = ttk.Label(video, text=self.t('vram'), wraplength=320)
+        vram_label.grid(row=4, column=0, sticky='w', pady=(6, 0))
         vram = tk.IntVar(value=int(self.settings['vram_budget_mb']))
         self.vars['vram_budget_mb'] = vram
         spin = ttk.Spinbox(video, from_=2000, to=24000, increment=200, textvariable=vram, width=8,
                            command=self.changed)
-        spin.grid(row=5, column=0, sticky='w', padx=6, pady=(2, 0))
+        spin.grid(row=4, column=1, sticky='e', padx=(6, 0), pady=(6, 0))
         spin.bind('<FocusOut>', lambda _: self.changed())
         vram_hint = ttk.Label(video, text=self.t('vram_hint'), foreground='#777',
                               wraplength=320, justify='left')
-        vram_hint.grid(row=6, column=0, sticky='w')
-        self.combo(video, 7, 'frame_rate', tlg_run.FRAME_RATES, lambda k: self.t(f'fps_{k}'))
+        vram_hint.grid(row=5, column=0, columnspan=2, sticky='w')
+        self.combo(video, 6, 'frame_rate', tlg_run.FRAME_RATES, lambda k: self.t(f'fps_{k}'))
         fps_hint = ttk.Label(video, text=self.t('fps_hint'), foreground='#777',
                              wraplength=320, justify='left')
-        fps_hint.grid(row=9, column=0, sticky='w')
-        self.combo(video, 10, 'resolution', tlg_run.RESOLUTIONS, lambda k: self.t(f'res_{k}'))
+        fps_hint.grid(row=8, column=0, columnspan=2, sticky='w')
+        self.combo(video, 9, 'resolution', tlg_run.RESOLUTIONS, lambda k: self.t(f'res_{k}'))
         resolution_hint = ttk.Label(video, text=self.t('resolution_hint'), foreground='#777',
                                     wraplength=320, justify='left')
-        resolution_hint.grid(row=13, column=0, sticky='w', pady=(2, 0))
+        resolution_hint.grid(row=12, column=0, columnspan=2, sticky='w', pady=(2, 0))
         video_labels = (vram_hint, fps_hint, resolution_hint)
 
+        wrap_labels_on_resize(
+            video, (vram_label,), reserved_width=spin.winfo_reqwidth() + 12)
         wrap_labels_on_resize(video, video_labels)
         self.build_filters(video, 14)
 
@@ -20710,6 +20716,7 @@ class Launcher:
                                   wraplength=320, justify='left')
         filters_label.grid(row=row + 1, column=0, columnspan=2, sticky='w')
         filter_labels = [filters_label]
+        color_labels = []
 
         wrap_labels_on_resize(parent, filter_labels)
         ini = dict(INI_DEFAULTS)
@@ -20721,27 +20728,28 @@ class Launcher:
             ttk.Checkbutton(parent, text=self.t(key), variable=var, command=self.filters_changed).grid(
                 row=row + offset, column=0, columnspan=2, sticky='w', pady=2)
         sharpening_label = ttk.Label(parent, text=self.t('sharpening'), wraplength=320)
-        sharpening_label.grid(
-            row=row + 5, column=0, columnspan=2, sticky='w')
-        filter_labels.append(sharpening_label)
+        sharpening_label.grid(row=row + 5, column=0, sticky='w')
         self.sharpener = ttk.Combobox(parent, values=[self.t('sharpen_' + k) for k in SHARPENERS],
                                       state='readonly', width=16)
         self.sharpener.current(2 if ini['cas'] not in ('0', '') else 1 if ini['rcas'] not in ('0', '') else 0)
-        self.sharpener.grid(row=row + 6, column=0, sticky='w', padx=6, pady=2)
+        self.sharpener.grid(row=row + 5, column=1, sticky='e', padx=(6, 0), pady=2)
+        wrap_labels_on_resize(
+            parent, (sharpening_label,), reserved_width=self.sharpener.winfo_reqwidth() + 12)
         self.sharpener.bind('<<ComboboxSelected>>', lambda _: self.filters_changed())
         for index, key in enumerate(COLOR_RANGES):
             low, high = COLOR_RANGES[key]
-            label_row = row + 7 + index * 2
+            label_row = row + 7 + index
             color_label = ttk.Label(parent, text=self.t(key), wraplength=320)
-            color_label.grid(
-                row=label_row, column=0, columnspan=2, sticky='w', padx=(16, 0))
-            filter_labels.append(color_label)
+            color_label.grid(row=label_row, column=0, sticky='w')
+            color_labels.append(color_label)
             var = tk.StringVar(value=ini[key])
             self.ini_vars[key] = var
             spin = ttk.Spinbox(parent, from_=low, to=high, increment=0.05, format='%.2f', textvariable=var,
                                width=6, command=self.filters_changed)
-            spin.grid(row=label_row + 1, column=0, sticky='w', padx=6, pady=1)
+            spin.grid(row=label_row, column=1, sticky='e', padx=(6, 0), pady=1)
             spin.bind('<FocusOut>', lambda _: self.filters_changed())
+        wrap_labels_on_resize(
+            parent, color_labels, reserved_width=spin.winfo_reqwidth() + 12)
 
     def filters_changed(self):
         values = {'smaa': int(self.ini_vars['smaa'].get()), 'color_adjust': int(self.ini_vars['color_adjust'].get()),
