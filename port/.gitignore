@@ -1,4 +1,6 @@
 out/
+!out/
+!out/libSceNgs2.bin
 __pycache__/
 user/
 *.mp4

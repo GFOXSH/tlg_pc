@@ -8,6 +8,7 @@
 #include <xxhash.h>
 #include "video_core/renderer_vulkan/ui_composition.h"
 #include "tlg_toggles.h"
+#include "tlg_settings.h"
 #include "video_core/renderer_vulkan/vk_frame_capture.h"
 #include "common/debug.h"
 #include "core/debug_state.h"
@@ -1464,7 +1465,7 @@ void Rasterizer::OnSubmit() {
         fault_process_pending = false;
         buffer_cache.ProcessFaultBuffer();
     }
-    texture_cache.ProcessDownloadImages();
+        texture_cache.ProcessDownloadImages();
     texture_cache.RunGarbageCollector();
     runtime.TickFrame();
 }
@@ -2158,8 +2159,12 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
         } else {
             const auto vsharp =
                 prepared ? prepared->buffer_sharps[buffer_index] : desc.GetSharp(stage);
-            if (vsharp.GetSize() == 864 && gbuffer_draw &&
-                memory->IsValidGpuMapping(vsharp.base_address, 0)) {
+            // Look for the camera only until this frame's camera is found, and never in a
+            // GPU-written buffer: reading one forces a download plus a full GPU wait on the
+            // recording thread, and the camera is never found there.
+            if (vsharp.GetSize() == 864 && gbuffer_draw && !camera_motion->HasCamera() &&
+                memory->IsValidGpuMapping(vsharp.base_address, 0) &&
+                !buffer_cache.IsRegionGpuModified(vsharp.base_address, 864)) {
                 camera_motion->OnConstants(reinterpret_cast<const float*>(vsharp.base_address));
             }
             // Object motion research: the vertex shader buffers of G-buffer draws.
@@ -3225,9 +3230,31 @@ void Rasterizer::RegisterMemory(VAddr addr, u64 size) {
     page_manager.OnGpuMap(addr, size);
 }
 
+bool Rasterizer::DiscardForOverwrite(VAddr addr, u64 size) {
+    DrainDrawPipe();
+    if (!IsMapped(addr, size) || !buffer_cache.IsRegionGpuModified(addr, size)) {
+        return false;
+    }
+    texture_cache.ResolveReadbacks(addr, size, false, VideoCore::ReadbackSource::CpuWrite);
+    buffer_cache.DiscardForOverwrite(addr, size);
+    texture_cache.InvalidateMemory(addr, size);
+    return true;
+}
+
+bool Rasterizer::HasGpuData(VAddr addr, u64 size) {
+    return IsMapped(addr, size) && buffer_cache.IsRegionGpuModified(addr, size);
+}
+
 void Rasterizer::UnmapMemory(VAddr addr, u64 size) {
     DrainDrawPipe();
     buffer_cache.InvalidateMemory(addr, size);
+    // Live in-game setting; ReleaseMemory waits for earlier GPU work before sparse unbind.
+    if (TlgSettings::Get().arena_release.load(std::memory_order_relaxed)) {
+        liverpool->SendCommand<false>([this, addr, size] {
+            DrainDrawPipe();
+            buffer_cache.ReleaseMemory(addr, size);
+        });
+    }
     texture_cache.UnmapMemory(addr, size);
     {
         std::scoped_lock lock{mapped_ranges_mutex};

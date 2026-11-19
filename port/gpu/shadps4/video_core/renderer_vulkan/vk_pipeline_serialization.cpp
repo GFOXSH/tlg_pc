@@ -19,6 +19,7 @@
 #include "common/serdes.h"
 #include "common/scope_exit.h"
 #include "video_core/renderer_vulkan/vk_pipeline_serialization.h"
+#include "video_core/renderer_vulkan/shader_recipe.h"
 #include "common/thread.h"
 #include "tlg_overlay.h"
 #include "core/emulator_settings.h"
@@ -591,7 +592,13 @@ void RegisterShaderMeta(const Shader::Info& info,
     if (!Storage::DataBase::Instance().IsOpened()) {
         return;
     }
+    Storage::DataBase::Instance().Save(Storage::BlobType::ShaderMeta,
+                                       fmt::format("{:#018x}", perm_hash),
+                                       EncodeShaderMeta(info, spec, perm_hash, perm_idx));
+}
 
+std::vector<u8> EncodeShaderMeta(const Shader::Info& info, const Shader::StageSpecialization& spec,
+                                 size_t perm_hash, size_t perm_idx) {
     Serialization::Archive ar;
     Serialization::Writer meta{ar};
 
@@ -604,8 +611,7 @@ void RegisterShaderMeta(const Shader::Info& info,
     spec.Serialize(ar);
     info.Serialize(ar);
 
-    Storage::DataBase::Instance().Save(Storage::BlobType::ShaderMeta,
-                                       fmt::format("{:#018x}", perm_hash), ar.TakeOff());
+    return ar.TakeOff();
 }
 
 void RegisterShaderBinary(std::vector<u32>&& spv, u64 pgm_hash, size_t perm_idx) {
@@ -702,6 +708,10 @@ bool PipelineCache::LoadComputePipeline(Serialization::Archive& ar) {
             auto pipeline = std::make_unique<ComputePipeline>(instance, scheduler, desc_heap,
                                                               profile, *pipeline_cache, key, *info,
                                                               module, sdata, true);
+            // spartanport: leave a null reservation so the failed-slot sweep can remove it.
+            if (!pipeline->IsValid()) {
+                return false;
+            }
             std::scoped_lock lock{warmup_results_mutex};
             warmup_compute.emplace_back(key, std::move(pipeline));
             return true;
@@ -715,6 +725,11 @@ bool PipelineCache::LoadComputePipeline(Serialization::Archive& ar) {
     sel.infos.fill(nullptr);
     sel.modules.fill(nullptr);
 
+    // spartanport: drop refused preload entries so runtime can retry with the live shaders.
+    if (!warmup_pool && !it.value()->IsValid()) {
+        compute_pipelines.erase(compute_key);
+        return false;
+    }
     return true;
 }
 
@@ -728,6 +743,9 @@ bool GraphicsPipelineKey::Deserialize(Serialization::Archive& ar) {
     Serialization::Reader key{ar};
 
     key.Read(this, sizeof(*this));
+    // tlg: keys saved before the pad fields can hold junk there.
+    pad_after_color_samples = 0;
+    pad_tail = 0;
     return true;
 }
 
@@ -790,6 +808,10 @@ bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar) {
             auto pipeline = std::make_unique<GraphicsPipeline>(
                 instance, scheduler, desc_heap, profile, key, *pipeline_cache, infos,
                 runtime_infos, fetch, modules, sdata, true);
+            // spartanport: an invalid object would survive the null-slot sweep and be reused.
+            if (!pipeline->IsValid()) {
+                return false;
+            }
             std::scoped_lock lock{warmup_results_mutex};
             warmup_graphics.emplace_back(key, std::move(pipeline));
             return true;
@@ -804,6 +826,11 @@ bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar) {
     sel.modules.fill(nullptr);
     sel.fetch_shader.reset();
 
+    // spartanport: a refused preload must not become a usable cache entry.
+    if (!warmup_pool && !it.value()->IsValid()) {
+        graphics_pipelines.erase(sel.graphics_key);
+        return false;
+    }
     return true;
 }
 
@@ -866,6 +893,15 @@ bool PipelineCache::CheckCacheProfile() {
     }
 
     Storage::DataBase::Instance().Open();
+    // tlg: once per session, before anything reads the cache: the shader recipe child translates
+    // what the cache lacks (shader_recipe.h). True when it ran, so a fresh cache warms up too.
+    const auto ImportRecipes = [] {
+        static bool done = false;
+        if (std::exchange(done, true)) {
+            return false;
+        }
+        return ShaderRecipe::ImportMissing(Storage::GameCacheDir());
+    };
 
     // Check if cache is compatible
     std::vector<u8> profile_data{};
@@ -878,7 +914,7 @@ bool PipelineCache::CheckCacheProfile() {
         Storage::DataBase::Instance().Save(Storage::BlobType::ShaderProfile, "profile",
                                            std::move(profile_data));
         OnColdCache();
-        return false;
+        return ImportRecipes();
     }
     if (profile_data.size() != sizeof(Shader::Profile)) {
         LOG_WARNING(Render, "Pipeline cache profile has unexpected size ({} != {})",
@@ -900,8 +936,9 @@ bool PipelineCache::CheckCacheProfile() {
         Storage::DataBase::Instance().Save(Storage::BlobType::ShaderProfile, "profile",
                                            std::move(profile_data));
         OnColdCache();
-        return false;
+        return ImportRecipes();
     }
+    ImportRecipes();
     return true;
 }
 
@@ -952,24 +989,31 @@ void PipelineCache::WarmUp(const std::function<void(u32, u32)>& progress) {
             Serialization::Archive ar{std::move(data)};
             Serialization::Reader pldata{ar};
 
-            u32 version{};
-            pldata.Read(version);
-            if (version != Serialization::PipelineKeyVersion) {
-                return;
-            }
+            // spartanport: skip damaged keys/metas and clear partial stage selections for retry.
+            try {
+                u32 version{};
+                pldata.Read(version);
+                if (version != Serialization::PipelineKeyVersion) {
+                    return;
+                }
 
-            u32 is_compute{};
-            pldata.Read(is_compute);
+                u32 is_compute{};
+                pldata.Read(is_compute);
 
-            bool result{};
-            if (is_compute) {
-                result = LoadComputePipeline(ar);
-            } else {
-                result = LoadGraphicsPipeline(ar);
-            }
+                bool result{};
+                if (is_compute) {
+                    result = LoadComputePipeline(ar);
+                } else {
+                    result = LoadGraphicsPipeline(ar);
+                }
 
-            if (result) {
-                ++num_pipelines;
+                if (result) {
+                    ++num_pipelines;
+                }
+            } catch (const std::exception&) {
+                sel.infos.fill(nullptr);
+                sel.modules.fill(nullptr);
+                sel.fetch_shader.reset();
             }
         });
 
@@ -983,16 +1027,17 @@ void PipelineCache::WarmUp(const std::function<void(u32, u32)>& progress) {
         for (auto& [key, pipeline] : warmup_compute) {
             compute_pipelines[key] = std::move(pipeline);
         }
-        for (auto it = graphics_pipelines.begin(); it != graphics_pipelines.end();) {
-            it = it->second ? std::next(it) : graphics_pipelines.erase(it);
-        }
-        for (auto it = compute_pipelines.begin(); it != compute_pipelines.end();) {
-            it = it->second ? std::next(it) : compute_pipelines.erase(it);
-        }
         num_pipelines -= pool->failed;
         warmup_graphics.clear();
         warmup_compute.clear();
         pool.reset();
+    }
+    // spartanport: discard failed serial reservations too so runtime can rebuild their pipelines.
+    for (auto it = graphics_pipelines.begin(); it != graphics_pipelines.end();) {
+        it = it->second ? std::next(it) : graphics_pipelines.erase(it);
+    }
+    for (auto it = compute_pipelines.begin(); it != compute_pipelines.end();) {
+        it = it->second ? std::next(it) : compute_pipelines.erase(it);
     }
     std::printf("Pipeline warm-up: %u of %u pipelines in %.2f s (%u threads)\n", num_pipelines,
                 num_total_pipelines,
@@ -1091,7 +1136,14 @@ bool PipelineCache::StartBackgroundWarmUp() {
         warm.total = u32(db.CountBlobs(Storage::BlobType::PipelineKey));
         db.ForEachBlob(
             Storage::BlobType::PipelineKey,
-            [&](std::vector<u8>&& data) { ReadWarmEntry(warm, std::move(data)); },
+            [&](std::vector<u8>&& data) {
+                // spartanport: skip damaged records individually so the reader job keeps going.
+                try {
+                    ReadWarmEntry(warm, std::move(data));
+                } catch (const std::exception&) {
+                    warm.done.fetch_add(1, std::memory_order_relaxed);
+                }
+            },
             [&] { return warm.stopping.load(std::memory_order_relaxed); });
         warm.stages.clear();
         warm.reader_ns = ElapsedNs(reader_started);
@@ -1137,7 +1189,8 @@ void PipelineCache::ReadWarmEntry(BackgroundWarmup& warm, std::vector<u8>&& data
         if (!hashes[i]) {
             continue;
         }
-        auto& stage = warm.stages[hashes[i]];
+        // spartanport: keep failed parses out of the shared stage cache for later records.
+        auto stage = warm.stages[hashes[i]];
         if (!stage) {
             stage = std::make_shared<WarmStage>();
             stage->device = instance.GetDevice();
@@ -1169,6 +1222,7 @@ void PipelineCache::ReadWarmEntry(BackgroundWarmup& warm, std::vector<u8>&& data
             if (!stage->module) {
                 stage->merged = true; // unusable: info stays null
             }
+            warm.stages[hashes[i]] = stage;
         }
         entry.stages[i] = stage;
     }
@@ -1297,10 +1351,19 @@ void PipelineCache::PumpWarmUp() {
                 built.compute = std::make_unique<ComputePipeline>(
                     instance, scheduler, desc_heap, profile, *pipeline_cache, compute_key,
                     *infos[0], modules[0], compute_data, true);
+                // spartanport: count refused background builds as failures and keep them
+                // unpublished.
+                if (!built.compute->IsValid()) {
+                    return false;
+                }
             } else {
                 built.graphics = std::make_unique<GraphicsPipeline>(
                     instance, scheduler, desc_heap, profile, graphics_key, *pipeline_cache, infos,
                     no_runtime_infos, fetch, modules, sdata, true);
+                // spartanport: leave a refused background graphics build out of the ready queue.
+                if (!built.graphics->IsValid()) {
+                    return false;
+                }
             }
             warm.built.Push(std::move(built));
             return true;
@@ -1429,6 +1492,11 @@ bool PersistentSrtInfo::Deserialize(Serialization::Archive& ar) {
     srt.Read(this, sizeof(*this));
 
     if (walker_func_size) {
+        // spartanport: reject truncated walker code before registering bytes beyond the record.
+        if (walker_func_size > ar.Remaining()) {
+            walker_func = nullptr;
+            throw Serialization::CorruptData{};
+        }
         walker_func = RegisterWalkerCode(ar.CurrPtr(), walker_func_size);
         ar.Advance(walker_func_size);
     }

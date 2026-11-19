@@ -133,7 +133,20 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
         FindMemoryType(instance.GetMemoryProperties(), vk::MemoryPropertyFlagBits::eDeviceLocal,
                        reqs.memoryTypeBits)
             .value();
-
+    // tlg: a memory type outside the device-local heaps for arena blocks once video memory is
+    // full (from the SotC port, @AjncSystem, thanks): slower GPU access beats aborting.
+    {
+        const auto& memory_properties = instance.GetMemoryProperties();
+        for (u32 i = 0; i < memory_properties.memoryTypeCount; ++i) {
+            const auto& heap =
+                memory_properties.memoryHeaps[memory_properties.memoryTypes[i].heapIndex];
+            if (((reqs.memoryTypeBits >> i) & 1) != 0 &&
+                !(heap.flags & vk::MemoryHeapFlagBits::eDeviceLocal)) {
+                arena_fallback_memory_type_index = i;
+                break;
+            }
+        }
+    }
     const u64 bda_pagetable_size =
         (blocks_per_arena_page * num_arena_pages) * sizeof(vk::DeviceAddress);
     // Zero-initialized; Windows commits its pages on first touch, so only ranges with written
@@ -228,6 +241,11 @@ void BufferCache::InvalidateMemory(VAddr device_addr, u64 size, bool assume_lock
     memory_tracker->InvalidateRegion(device_addr, size, [this, device_addr, size, assume_locks] {
         ReadMemory(device_addr, size, true, assume_locks);
     });
+}
+
+void BufferCache::DiscardForOverwrite(VAddr device_addr, u64 size) {
+    memory_tracker->UnmarkRegionAsGpuModified(device_addr, size);
+    memory_tracker->MarkRegionAsCpuModified(device_addr, size);
 }
 
 // tlg: the game fills its per-frame buffers (constants, skinning output) sequentially and
@@ -614,7 +632,7 @@ bool BufferCache::CopyOnReadbackQueue(const Buffer* arena, const Buffer* dst,
         auto [pool_result, pool] = device.createCommandPoolUnique({
             .flags = vk::CommandPoolCreateFlagBits::eTransient |
                      vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
-            .queueFamilyIndex = instance.GetGraphicsQueueFamilyIndex(),
+            .queueFamilyIndex = instance.GetReadbackQueueFamilyIndex(),
         });
         auto [fence_result, fence] = device.createFenceUnique({});
         if (pool_result != vk::Result::eSuccess || fence_result != vk::Result::eSuccess) {
@@ -631,6 +649,9 @@ bool BufferCache::CopyOnReadbackQueue(const Buffer* arena, const Buffer* dst,
         readback_pool = std::move(pool);
         readback_fence = std::move(fence);
         readback_cmdbuf = cmdbufs.front();
+        LOG_INFO(Render_Vulkan, "tlg: readback cmdbuf {} on family {}",
+                 static_cast<void*>(static_cast<VkCommandBuffer>(readback_cmdbuf)),
+                 instance.GetReadbackQueueFamilyIndex());
     }
 
     const vk::CommandBufferBeginInfo begin_info{
@@ -1155,13 +1176,32 @@ void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_
         return;
     }
     TlgStats::Timer timer{TlgStats::t_resident};
-
-    const vk::MemoryAllocateInfo alloc_info = {
-        .allocationSize = resident_blocks << block_shift,
+    vk::MemoryAllocateInfo alloc_info = {
+        .allocationSize = u64{resident_blocks} << block_shift,
         .memoryTypeIndex = arena_memory_type_index,
     };
-    const auto device_memory = Vulkan::Check(instance.GetDevice().allocateMemory(alloc_info));
+    auto [alloc_result, device_memory] = instance.GetDevice().allocateMemory(alloc_info);
+    if (alloc_result == vk::Result::eErrorOutOfDeviceMemory && arena_fallback_memory_type_index) {
+        // tlg: from the SotC port (@AjncSystem, thanks): video memory full, the exact size from
+        // system memory (slower GPU access) instead of aborting.
+        static bool warned = false;
+        if (!std::exchange(warned, true)) {
+            LOG_WARNING(Render, "Video memory exhausted, placing new buffer memory in system RAM");
+        }
+        alloc_info.memoryTypeIndex = *arena_fallback_memory_type_index;
+        std::tie(alloc_result, device_memory) = instance.GetDevice().allocateMemory(alloc_info);
+    }
+    if (alloc_result != vk::Result::eSuccess) {
+        LOG_CRITICAL(Render, "Out of video and system memory for {} MiB of buffer arena memory "
+                             "({} MiB resident)",
+                     alloc_info.allocationSize >> 20,
+                     TlgStats::arena_resident_bytes.load(std::memory_order_relaxed) >> 20);
+    }
+    ASSERT_MSG(alloc_result == vk::Result::eSuccess, "Failed to allocate buffer arena memory: {}",
+               vk::to_string(alloc_result));
     TlgStats::arena_resident_bytes.fetch_add(alloc_info.allocationSize, std::memory_order_relaxed);
+    backing_blocks[static_cast<VkDeviceMemory>(device_memory)] += resident_blocks;
+    backing_bytes[static_cast<VkDeviceMemory>(device_memory)] = alloc_info.allocationSize;
 
     boost::container::small_vector<vk::BufferCopy, 8> copies;
     const auto staging =
@@ -1366,8 +1406,121 @@ bool BufferCache::SynchronizeMemoryFromImage(const Buffer* arena, VAddr device_a
     return true;
 }
 
-void BufferCache::SubmitPendingArenaBinds(Vulkan::SubmitInfo& info) {
-    if (pending_binds.empty()) {
+// boost small_vector has no std::erase_if.
+static void tlg_erase_if(auto& c, auto&& pred) {
+    c.erase(std::remove_if(c.begin(), c.end(), pred), c.end());
+}
+
+// tlg (issue #38): release sparse arena memory on guest unmap. The GPU is finished before the
+// sparse unbind, fixing device loss while loading. From the SotC port (@AjncSystem, @Oussama268).
+void BufferCache::ReleaseMemory(VAddr device_addr, u64 size) {
+    // Only whole blocks inside the unmapped range can go; partial blocks may back neighbours.
+    const u64 first_block = Common::AlignUp(device_addr, u64{block_size}) >> block_shift;
+    const u64 end_block = (device_addr + size) >> block_shift;
+    if (first_block >= end_block) {
+        return;
+    }
+    boost::container::small_vector<Backing, 16> released;
+    const auto collect = [&] {
+        released.clear();
+        resident_ranges.ForEachInRange(first_block, end_block, [&](const Backing& backing) {
+            const u64 start = std::max(first_block, backing.start);
+            const u64 end = std::min(end_block, backing.end);
+            if (start < end) {
+                released.push_back(backing.SubRange(start, end));
+            }
+        });
+    };
+    collect();
+    if (released.empty()) {
+        return;
+    }
+    // Work recorded before the unmap may still use this memory, and sparse binds are not
+    // ordered against earlier submissions: finish that work before unbinding, or the GPU
+    // touches unbound memory (device lost while loading). Unmaps are rare, the sync is cheap.
+    // tlg: the background readback copies on its own queue: land it too.
+    if (async_active) {
+        ResolveAsyncReadback(async_arena);
+    }
+    scheduler.Finish();
+    // The deferred operations Finish ran (fault buffer rebinds) may have bound more of the
+    // range, and their binds must not share the unbind's sparse batch.
+    collect();
+    if (!pending_binds.empty()) {
+        scheduler.Flush();
+    }
+    u64 bytes = 0;
+    for (const Backing& range : released) {
+        bytes += (range.end - range.start) << block_shift;
+    }
+    UnbindResident(released);
+    TlgStats::arena_released.fetch_add(bytes, std::memory_order_relaxed);
+    tlg_erase_if(hot_readbacks, [&](const HotReadback& hot) {
+        return hot.addr < (end_block << block_shift) &&
+               (first_block << block_shift) < hot.addr + hot.size;
+    });
+    resident_ranges.Subtract(first_block, end_block);
+    gpu_modified_ranges.Subtract(first_block << block_shift,
+                                 (end_block - first_block) << block_shift);
+    // A bind of the same blocks (the guest maps them again) must not share the unbind's sparse
+    // bind batch: binds of one range within a batch are not ordered.
+    scheduler.Flush();
+    ReportArenaRelease();
+}
+
+void BufferCache::UnbindResident(std::span<const Backing> released) {
+    for (const Backing& range : released) {
+        // Split at arena page boundaries, each page may belong to a different arena.
+        for (u64 start = range.start; start < range.end;) {
+            const u64 page = start >> blocks_per_arena_page_shift;
+            const u64 end = std::min<u64>(range.end, (page + 1) << blocks_per_arena_page_shift);
+            if (const Buffer* arena = address_space[page]) {
+                BindsForArena(arena)->binds.push_back(vk::SparseMemoryBind{
+                    .resourceOffset = (start << block_shift) - arena->cpu_addr,
+                    .size = (end - start) << block_shift,
+                    .memory = {},
+                    .memoryOffset = 0,
+                });
+            }
+            start = end;
+        }
+        // Shaders reach arena memory through the BDA page table; a null entry faults the block
+        // back in (fault buffer) instead of touching unbound memory.
+        runtime.FillBuffer(bda_pagetable_buffer.get(), range.start * sizeof(vk::DeviceAddress),
+                           (range.end - range.start) * sizeof(vk::DeviceAddress), 0u);
+        const auto memory = static_cast<VkDeviceMemory>(range.memory);
+        auto it = backing_blocks.find(memory);
+        if (it != backing_blocks.end()) {
+            it->second -= std::min(it->second, range.end - range.start);
+            if (it->second == 0) {
+                backing_blocks.erase(it);
+                if (auto bytes = backing_bytes.find(memory); bytes != backing_bytes.end()) {
+                    TlgStats::arena_resident_bytes.fetch_sub(bytes->second,
+                                                             std::memory_order_relaxed);
+                    backing_bytes.erase(bytes);
+                }
+                // The unbind is submitted before this tick's work, which waits for it.
+                scheduler.DeferOperation([device = instance.GetDevice(), memory = range.memory] {
+                    device.freeMemory(memory);
+                });
+            }
+        }
+    }
+}
+
+void BufferCache::ReportArenaRelease() {
+    // tlg: one summary line at most every 10 s, so a user log shows the release working.
+    const auto now = std::chrono::steady_clock::now();
+    if (now < next_release_report) {
+        return;
+    }
+    next_release_report = now + std::chrono::seconds(10);
+    LOG_INFO(Render, "Buffer arenas: {} MiB resident; given back {} MiB on unmap",
+             TlgStats::arena_resident_bytes.load(std::memory_order_relaxed) >> 20,
+             TlgStats::arena_released.load(std::memory_order_relaxed) >> 20);
+}
+
+void BufferCache::SubmitPendingArenaBinds(Vulkan::SubmitInfo& info) {    if (pending_binds.empty()) {
         return;
     }
 
@@ -1399,8 +1552,37 @@ void BufferCache::SubmitPendingArenaBinds(Vulkan::SubmitInfo& info) {
     };
 
     info.AddWait(signal_sema, signal_tick);
-    auto submit_result = instance.GetGraphicsQueue().bindSparse(sparse_info);
+    // tlg: TLG_TEST_BIND_REFUSE=<n> (test knob): every n-th batch is refused twice, as a full card.
+    static const u64 refuse_every = [] {
+        const char* v = std::getenv("TLG_TEST_BIND_REFUSE");
+        return v ? std::strtoull(v, nullptr, 10) : 0ull;
+    }();
+    static u64 batches = 0;
+    const bool refuse = refuse_every && ++batches % refuse_every == 0;
+    auto submit_result = refuse ? vk::Result::eErrorOutOfDeviceMemory
+                                : instance.GetGraphicsQueue().bindSparse(sparse_info);
     ASSERT_MSG(submit_result != vk::Result::eErrorDeviceLost, "Device lost during submit");
+    // tlg: from the SotC port (@Madmer, thanks): out of video and system memory the driver may
+    // refuse the bind; the semaphore the next submit waits for was then never signalled and the
+    // game froze for good. Once more after the earlier binds are done, else the semaphore is
+    // signalled from the host (the ranges stay unbound: shaders read zeros there).
+    if (submit_result != vk::Result::eSuccess) {
+        memory_semaphore.Wait(signal_tick - 1);
+        submit_result = refuse ? vk::Result::eErrorOutOfDeviceMemory
+                               : instance.GetGraphicsQueue().bindSparse(sparse_info);
+        ASSERT_MSG(submit_result != vk::Result::eErrorDeviceLost, "Device lost during submit");
+    }
+    if (submit_result != vk::Result::eSuccess) {
+        const vk::SemaphoreSignalInfo signal_info = {.semaphore = signal_sema,
+                                                     .value = signal_tick};
+        const auto signal_result = instance.GetDevice().signalSemaphore(signal_info);
+        static u32 reported = 0;
+        if (reported++ < 8) {
+            LOG_CRITICAL(Render, "Sparse bind refused ({}), {} arenas left unbound; signal {}",
+                         vk::to_string(submit_result), pending_binds.size(),
+                         vk::to_string(signal_result));
+        }
+    }
 
     pending_binds.clear();
 }

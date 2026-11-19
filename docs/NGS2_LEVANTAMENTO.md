@@ -1,6 +1,8 @@
 # Levantamento: NGS2 próprio para TLG e GR2
 
-13/10/2026. Base para reimplementar do zero o `libSceNgs2` (mixer de software da Sony), para os ports não precisarem mais do `libSceNgs2.sprx` do firmware (TLG #11 / GR2 #8).
+13/10/2026. Levantamento histórico do `libSceNgs2` (mixer de software da Sony), usado como referência para integrar o módulo ELF original.
+
+> Estado atual: o mixer HLE/trace descritos abaixo não são usados. `port/out/libSceNgs2.bin` é uma imagem ELF64 `ET_SCE_DYN` carregada pelo antigo `link_modules.py`; não há `ngs2.a`/`ngs2.lib` nem carregamento de SPRX externo.
 
 Fontes:
 - **Rastreio dinâmico** do NGS2 nativo nos dois jogos (`TLG_NGS2_TRACE`, ver abaixo): GR2 ~4 min e TLG ~5 min, do título até o gameplay. São 4,5 milhões de `VoiceControl` no TLG e 110 mil no GR2.
@@ -121,7 +123,7 @@ Cabeçalho: `u16 size; s16 next; u32 id`. `next` é o deslocamento em bytes até
 
 ## 4. Plano de implementação
 
-Arquivo novo `port/src/runtime_ngs2.c`, compartilhado pelos dois ports, ligado por `TLG_NGS2=hle`. O nativo continua sendo o padrão até a comparação ficar boa.
+Implementação HLE histórica (removida): `port/src/runtime_ngs2.c`, compartilhada pelos dois ports e ligada por `TLG_NGS2=hle`.
 
 | Etapa | Conteúdo | Validação |
 |---|---|---|
@@ -136,7 +138,7 @@ Estimativa: etapas 1–3 em 2–3 semanas; 4–5 em mais 2–4.
 
 ## 5. Implementação (etapas 1–3, 14/10/2026)
 
-`port/src/runtime_ngs2.c` (branch `feat/ngs2-hle`), sem nada de jogo dentro. Escolha: `TLG_NGS2=native` usa o `.sprx`; qualquer outro valor (o launcher manda `hle` quando o `.sprx` falta ou está desmarcado) usa o mixer próprio.
+Implementação histórica: `port/src/runtime_ngs2.c` (branch `feat/ngs2-hle`), sem código do jogo. A seleção entre `.sprx` externo e mixer HLE também foi removida; atualmente o port carrega somente `port/out/libSceNgs2.bin`.
 
 Achados novos [C]:
 - **Fim de voz no sndx** (TLG `0x1a85b0`, a função que imprime `VOICE_FINISHED`): depois de `VoiceGetState(h, &st, 0x30)`, a voz é dada como terminada **só quando o bit 0 (INUSE) de `stateFlags` cai**. `(flags & 0x22) == 2` (PLAYING sem EMPTY) marca "tocou"; PLAYING com **EMPTY (0x20)** conta falta de dados (stream atrasado). `numDecodedSamples`/`decodedDataSize` (st+0x10) e `envelopeHeight`/`peakHeight` são copiados para a voz do sndx.
@@ -149,7 +151,7 @@ Estado (etapas 1–3): sampler (PCM, VAG/HEVAG com a tabela de 128 preditores, A
 
 ### 5.1 Efeitos (etapas 4–5, estudados no `libSceNgs2.sprx`) [C]
 
-O módulo nativo monta cada voz como uma cadeia de "módulos" com parâmetros convertidos e clampados. O que foi lido no binário e reescrito em `runtime_ngs2.c`:
+O módulo nativo monta cada voz como uma cadeia de "módulos" com parâmetros convertidos e clampados. O que foi lido no binário e reescrito na antiga implementação HLE (`runtime_ngs2.c`, removida):
 
 - **Ordem na voz** (sampler e submixer): filtros com `location` 0 → envelope → compressor (submixer) → distorção → USER_FX → filtros `location` 1 → peak meter → para cada porta p: filtros `location` 2+p só no que a porta envia → envio (volume × matriz, **rampa linear no grain** entre o valor anterior e o novo). Início com fade-in de 64 amostras; STOP/KILL com fade-out de 64 amostras no grain seguinte.
 - **Filtro** (`0x1000000a`/`0x20000006`, 48 B): `index, location (0..17), type, channelMask` (bits = canais **sem** filtro), `fc, q, level` ou 5 coeficientes diretos (`type 0x20`). Tipos: 0 bypass, 1 LPF, 2 HPF, 3 BPF, 4 BPF 0 dB, 5 notch, 6 low shelf, 7 high shelf, 8 peaking (`level` = ganho linear, A = √level), 9/10 LPF/HPF de 1ª ordem. Projetos RBJ; `fc/fs` limitado a 0,001..0,49987, Q a 1e-4..32.

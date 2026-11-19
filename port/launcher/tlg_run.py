@@ -5,19 +5,21 @@
 Shared by the command line (run_tlg.sh -> `tlg_run.py [seconds]`) and the launcher window
 (tlg_launcher.py), so both start the game the same way:
   1. prepare.py / link_modules.py / content_profile.py build out/boot-linked.bin from the game
-     folder (eboot 1.03 + the game's libc/Fios2, and libSceNgs2.sprx from the console firmware
-     when present: native audio; otherwise the built-in mixer, runtime_ngs2.c); on a CPU without
-     the PS4's MOVBE/BMI1/LZCNT/SSE4A, and on Windows for the red-zone protection, isa_rewrite.py
-     writes out/isa-rewrite.bin, the instruction sites tlg-probe rewrites;
+     folder (eboot 1.03 + the game's libc/Fios2 + the native libSceNgs2.bin ELF module);
+     isa_rewrite.py handles unsupported PS4 instructions and Windows red-zone protection;
   2. the TLG defaults below become TLG_* environment variables (each one validated in play);
   3. tlg-probe runs with its output in out/logs/run-<date>.log (last_run.log points to it).
 """
+import copy
 import datetime
+import glob
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 
 import shader_cache
 
@@ -29,7 +31,99 @@ OUT_DIR = PORT_DIR / 'out'
 USER_DIR = PORT_DIR / 'user'
 LOG_DIR = OUT_DIR / 'logs'
 PROBE = OUT_DIR / ('tlg-probe.exe' if os.name == 'nt' else 'tlg-probe')
+NGS2_MODULE = OUT_DIR / 'libSceNgs2.bin'
 KEEP_LOGS = 30
+
+
+# VRAM budget policy. This target uses a small Tk launcher rather than the upstream
+# backports-table UI, so keep the budget calculation/detection here without Qt dependencies.
+BUDGET_DEFAULT = 7000
+BUDGET_MIN, BUDGET_MAX = 2000, 24000
+
+
+def suggested_budget_mb(vram_gb):
+    """Texture-cache budget in MB: 7000 for 8 GB+, scaled down for smaller cards."""
+    value = min(BUDGET_DEFAULT, 5600 * float(vram_gb) / 6)
+    return int(min(max(round(value / 100) * 100, BUDGET_MIN), BUDGET_MAX))
+
+
+def _parse_nvidia_vram(text):
+    values = [int(value) for value in re.findall(r'^\s*(\d+)\s*$', text or '', re.M)]
+    return max(values) if values else None
+
+
+def _read_amdgpu_vram():
+    sizes = []
+    for path in glob.glob('/sys/class/drm/card*/device/mem_info_vram_total'):
+        try:
+            sizes.append(int(Path(path).read_text(encoding='ascii').strip()))
+        except (OSError, ValueError):
+            pass
+    return max(sizes) // (1024 * 1024) if sizes else None
+
+
+def _parse_vulkan_vram(text):
+    best = {}
+    name = ''
+    size = None
+    local = False
+    in_heap = False
+
+    def finish_heap():
+        if in_heap and size and local:
+            best[name] = max(best.get(name, 0), size)
+
+    for line in (text or '').splitlines():
+        device = re.match(r'\s*deviceName\s*=\s*(.+?)\s*$', line)
+        if device:
+            finish_heap()
+            name, size, local, in_heap = device.group(1), None, False, False
+            continue
+        if re.match(r'\s*memoryHeaps\[\d+\]:', line):
+            finish_heap()
+            size, local, in_heap = None, False, True
+            continue
+        if not in_heap:
+            continue
+        match = re.match(r'\s*size\s*=\s*(\d+)', line)
+        if match and size is None:
+            size = int(match.group(1))
+        elif 'MEMORY_HEAP_DEVICE_LOCAL_BIT' in line:
+            local = True
+        elif re.match(r'\s*memoryTypes\[', line) or re.match(r'\s*memoryHeapCount', line):
+            finish_heap()
+            size, local, in_heap = None, False, False
+    finish_heap()
+    return max(best.values()) // (1024 * 1024) if best else None
+
+
+def detect_vram_mb(timeout=15):
+    """Detect VRAM via nvidia-smi, AMD sysfs, then Vulkan device-local heaps."""
+    flags = {
+        'stdin': subprocess.DEVNULL,
+        'capture_output': True,
+        'text': True,
+        'timeout': timeout,
+        'creationflags': getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+    }
+    try:
+        result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=memory.total', '--format=csv,noheader,nounits'],
+            **flags)
+        value = _parse_nvidia_vram(result.stdout)
+        if value:
+            return value
+    except (OSError, subprocess.SubprocessError):
+        pass
+    value = _read_amdgpu_vram()
+    if value:
+        return value
+    try:
+        result = subprocess.run([os.environ.get('TLG_VULKANINFO', 'vulkaninfo')], **flags)
+        return _parse_vulkan_vram(result.stdout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
 
 # Game language: the engine's own ids (NOT the PS4 system ones), looked up through
 # sceSystemServiceParamGetInt(LANG). Each CUSA ships a subset of them; an id it does not ship
@@ -57,7 +151,7 @@ DEFAULT_ENV = {
     'TLG_PIPELINE_BINARIES': '0',  # VK_KHR_pipeline_binary crashes on the NVIDIA 595 driver
     'TLG_READBACKS': '2',          # the game reads GPU compute results on the CPU (AsyncMap)
     'TLG_READBACK_LINEAR': '1',    # small/linear render targets back to the CPU: auto exposure (#38, #40)
-    'TLG_GC_BUDGET_MB': '5600',    # texture cache budget for 6 GB of VRAM
+    'TLG_GC_BUDGET_MB': '7000',    # current upstream default; smaller cards get a lower detected budget
     'TLG_UPSCALER': 'off',         # native image: GoW3's temporal upscalers made it shake
     'TLG_JITTER': '0',
     'TLG_OBJECT_MOTION': '0',
@@ -76,23 +170,27 @@ READBACK_FLAGS = (
     ('async_fences', 'TLG_ASYNC_FENCES', False),
 )
 
+DEFAULT_STICK_KEYS = {
+    'walk_up': 'W', 'walk_left': 'A', 'walk_down': 'S', 'walk_right': 'D',
+    'camera_up': 'I', 'camera_left': 'J', 'camera_down': 'K', 'camera_right': 'L',
+}
+
 DEFAULT_SETTINGS = {
-    # Source tree: the merged game view and the console modules of ~/decomp. Package: the player
-    # picks the game folder; libSceNgs2.sprx goes in system_lib/ next to the executable.
+    # Source tree: the merged game view. Package: the player picks the game folder.
     'game_dir': '' if FROZEN else str(REPO_DIR / 'game' / 'CUSA03627'),
-    'system_lib_dir': str(PORT_DIR / 'system_lib') if FROZEN else str(REPO_DIR / 'dump' / 'system_lib'),
     'game_language': 'pt_BR',
-    'ui_language': 'auto',         # auto | pt_BR | en_US
+    'ui_language': 'auto',         # auto | pt_BR | en_US | ru_RU
     'show_fps': False,
     'display_mode': 'Windowed',    # Windowed | Borderless | Fullscreen (tlg.ini)
     'vsync': True,
-    'vram_budget_mb': 5600,
-    'native_audio': True,
+    'vram_budget_mb': 7000,
+    'keep_gpu_textures': True,
     # Mouse and keyboard (tlg.ini; the in-game menu's Controls tab changes the mouse ones too).
     'mouse_enabled': True,
     'mouse_sensitivity': 1.0,
     'mouse_invert_y': False,
     'key_map': {},                 # PS4 button -> 'Key|Mouse Left' (empty: the default)
+    'stick_keys': dict(DEFAULT_STICK_KEYS),
     'frame_rate': '30',            # 30 | 60 | unlocked (scripts/tlg_patches.py; TLG_FPS wins)
     'resolution': '1080p',         # 360p | 720p | 1080p | 1440p | 4k (checked EBOOT patch)
     'draw_pipe': 'auto',           # auto | on | off (TLG_DRAW_PIPE; Advanced)
@@ -109,12 +207,12 @@ applied_resolution = '1080p'
 # MiB added to the game's Garlic GPU heap by scripts/tlg_patches.py.
 applied_garlic_extra = 0
 
-# Keyboard and mouse defaults of src/runtime_pad.c, in its key_map syntax ('|': several).
+# Keyboard defaults of src/runtime_pad.c, in its key_map syntax ('|': several).
 DEFAULT_KEYS = {
-    'cross': 'Left Ctrl', 'circle': 'E|Mouse Left', 'square': 'Left Shift', 'triangle': 'Space',
-    'l1': 'Q', 'r1': 'F|Mouse Right', 'l2': '', 'r2': '', 'l3': 'Tab', 'r3': '', 'options': 'Return',
+    'cross': 'Left Ctrl', 'circle': 'E', 'square': 'Left Shift', 'triangle': 'Space',
+    'l1': 'Q', 'r1': 'F', 'l2': '', 'r2': '', 'l3': 'Tab', 'r3': '', 'options': 'Return',
     'touchpad_left': '', 'touchpad_right': '',
-    'up': 'Up', 'down': 'Down', 'left': 'Left|Wheel Down', 'right': 'Right|Wheel Up',
+    'up': 'Up', 'down': 'Down', 'left': 'Left', 'right': 'Right',
 }
 # Synced with tlg.ini both ways: the in-game menu saves them there.
 INI_KEYS = ('mouse_enabled', 'mouse_sensitivity', 'mouse_invert_y', 'key_map')
@@ -122,8 +220,24 @@ INI_KEYS = ('mouse_enabled', 'mouse_sensitivity', 'mouse_invert_y', 'key_map')
 
 def key_map_spec(mapping):
     """The tlg.ini key_map value: only the buttons that differ from the defaults."""
-    return ','.join(f'{button}={value.strip()}' for button, value in mapping.items()
-                    if button in DEFAULT_KEYS and value.strip() and value.strip() != DEFAULT_KEYS[button])
+    entries = []
+    for button, value in keyboard_key_map(mapping).items():
+        if value != DEFAULT_KEYS[button]:
+            entries.append(f'{button}={value}')
+    return ','.join(entries)
+
+def keyboard_key_map(mapping):
+    """Keep only configurable keyboard bindings; mouse bindings are fixed in the runtime."""
+    clean = {}
+    for button, value in mapping.items():
+        if button not in DEFAULT_KEYS or not isinstance(value, str):
+            continue
+        bindings = [part.strip() for part in value.split('|') if part.strip()]
+        keyboard = '|'.join(part for part in bindings
+                            if not part.lower().startswith(('mouse ', 'wheel ')))
+        if keyboard:
+            clean[button] = keyboard
+    return clean
 
 
 def parse_key_map(spec):
@@ -132,19 +246,76 @@ def parse_key_map(spec):
         button, eq, value = entry.partition('=')
         if eq and button.strip().lower() in DEFAULT_KEYS:
             mapping[button.strip().lower()] = value.strip()
-    return mapping
+    return keyboard_key_map(mapping)
 
 
-def read_ini(path):
-    values = {}
+def _as_bool(value, default=False):
+    """Parse persisted booleans without treating the string '0' as true."""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() not in ('', '0', 'false', 'no', 'off')
+    return bool(value)
+
+
+def normalize_settings(values):
+    """Return a validated, independent settings snapshot with all public defaults applied."""
+    settings = copy.deepcopy(DEFAULT_SETTINGS)
+    if isinstance(values, dict):
+        settings.update(values)
+
+    for key, default in (('show_fps', False), ('vsync', True), ('keep_gpu_textures', True),
+                         ('mouse_enabled', True), ('mouse_invert_y', False)):
+        settings[key] = _as_bool(settings.get(key), default)
+
+    settings['game_dir'] = str(settings.get('game_dir') or '')
+    settings['game_language'] = str(settings.get('game_language') or 'pt_BR')
+    if settings.get('ui_language') not in ('auto', 'pt_BR', 'en_US', 'ru_RU'):
+        settings['ui_language'] = 'auto'
+    if settings.get('display_mode') not in ('Windowed', 'Borderless', 'Fullscreen'):
+        settings['display_mode'] = 'Windowed'
+    if str(settings.get('frame_rate')) not in FRAME_RATES:
+        settings['frame_rate'] = '30'
+    else:
+        settings['frame_rate'] = str(settings['frame_rate'])
+    if settings.get('resolution') not in RESOLUTIONS:
+        settings['resolution'] = '1080p'
+    if settings.get('draw_pipe') not in ('auto', 'on', 'off'):
+        settings['draw_pipe'] = 'auto'
+
     try:
-        for line in Path(path).read_text(encoding='utf-8').splitlines():
-            key, eq, value = line.partition('=')
-            if eq and not key.startswith('#'):
-                values[key.strip()] = value.strip()
-    except OSError:
-        pass
-    return values
+        settings['vram_budget_mb'] = min(BUDGET_MAX, max(BUDGET_MIN, int(settings['vram_budget_mb'])))
+    except (TypeError, ValueError, OverflowError):
+        settings['vram_budget_mb'] = DEFAULT_SETTINGS['vram_budget_mb']
+    try:
+        settings['mouse_sensitivity'] = min(5.0, max(0.1, float(settings.get('mouse_sensitivity', 1.0))))
+    except (TypeError, ValueError, OverflowError):
+        settings['mouse_sensitivity'] = DEFAULT_SETTINGS['mouse_sensitivity']
+
+    mode = str(settings.get('gpu_readbacks', '2'))
+    if mode not in ('0', '1', '2') or mode == '2':
+        settings.pop('gpu_readbacks', None)
+    else:
+        settings['gpu_readbacks'] = mode
+
+    for key, _env_key, default in READBACK_FLAGS:
+        if key in settings:
+            settings[key] = _as_bool(settings[key], default)
+
+    raw_key_map = settings.get('key_map')
+    settings['key_map'] = keyboard_key_map(raw_key_map if isinstance(raw_key_map, dict) else {})
+    stick_keys = dict(DEFAULT_STICK_KEYS)
+    raw_stick_keys = settings.get('stick_keys')
+    if isinstance(raw_stick_keys, dict):
+        for key, value in raw_stick_keys.items():
+            if key in DEFAULT_STICK_KEYS and isinstance(value, str) and value.strip():
+                stick_keys[key] = value.strip()
+    settings['stick_keys'] = stick_keys
+
+    for key in ('readback_defaults_2026_10', 'budget_default_2026_10', 'budget_default_2026_11'):
+        settings.pop(key, None)
+    settings['settings_schema_version'] = 2
+    return settings
 
 
 def config_path():
@@ -153,41 +324,90 @@ def config_path():
 
 
 def load_settings():
-    settings = dict(DEFAULT_SETTINGS)
+    """Load, migrate and validate launcher preferences, then merge in-game-owned controls."""
+    raw = {}
     try:
-        settings.update(json.loads(config_path().read_text(encoding='utf-8')))
-    except (OSError, ValueError):
+        loaded = json.loads(config_path().read_text(encoding='utf-8'))
+        if isinstance(loaded, dict):
+            raw = loaded
+    except (OSError, ValueError, TypeError):
         pass
-    # Once: deferred readback became the measured default in October 2026. Drop an older
-    # explicit false value from launchers that stored every switch, defaults included.
-    if not settings.get('readback_defaults_2026_10'):
-        settings.pop('deferred_readback', None)
-        settings['readback_defaults_2026_10'] = True
-    # The in-game menu may have changed the mouse since: tlg.ini wins for those keys.
+
+    settings = copy.deepcopy(DEFAULT_SETTINGS)
+    settings.update(raw)
+    schema = raw.get('settings_schema_version', 0)
+    try:
+        schema = int(schema)
+    except (TypeError, ValueError):
+        schema = 0
+    original_schema = schema
+
+    if raw and schema < 1:
+        if not raw.get('readback_defaults_2026_10'):
+            settings.pop('deferred_readback', None)
+        if not raw.get('budget_default_2026_10'):
+            try:
+                settings['vram_budget_mb'] = min(int(settings['vram_budget_mb']),
+                                                 DEFAULT_SETTINGS['vram_budget_mb'])
+            except (TypeError, ValueError, OverflowError):
+                settings['vram_budget_mb'] = DEFAULT_SETTINGS['vram_budget_mb']
+        schema = 1
+    if raw and schema < 2:
+        if not raw.get('budget_default_2026_11'):
+            try:
+                legacy_budget = int(settings['vram_budget_mb'])
+            except (TypeError, ValueError, OverflowError):
+                legacy_budget = DEFAULT_SETTINGS['vram_budget_mb']
+            if legacy_budget in (5000, DEFAULT_SETTINGS['vram_budget_mb']):
+                vram = detect_vram_mb()
+                settings['vram_budget_mb'] = (suggested_budget_mb(vram / 1024) if vram
+                                              else DEFAULT_SETTINGS['vram_budget_mb'])
+        schema = 2
+
+    settings = normalize_settings(settings)
     ini = read_ini(USER_DIR / 'tlg.ini')
-    try:
-        if 'mouse_enabled' in ini:
-            settings['mouse_enabled'] = ini['mouse_enabled'] != '0'
-        if 'mouse_invert_y' in ini:
-            settings['mouse_invert_y'] = ini['mouse_invert_y'] != '0'
-        if 'mouse_sensitivity' in ini:
+    display_mode = ini.get('display_mode', '').strip().lower()
+    if display_mode in ('windowed', 'borderless', 'fullscreen'):
+        settings['display_mode'] = display_mode.title()
+    for key in ('vsync', 'show_fps', 'keep_gpu_textures', 'mouse_enabled', 'mouse_invert_y'):
+        if key in ini:
+            settings[key] = _as_bool(ini[key], settings[key])
+    if 'mouse_sensitivity' in ini:
+        try:
             settings['mouse_sensitivity'] = min(5.0, max(0.1, float(ini['mouse_sensitivity'])))
-    except ValueError:
-        pass
+        except (TypeError, ValueError, OverflowError):
+            pass
     if 'key_map' in ini:
         settings['key_map'] = parse_key_map(ini['key_map'])
+
+    if raw and original_schema < 2:
+        save_settings(settings)
     return settings
 
-
 def save_settings(settings):
+    """Atomically persist normalized preferences and synchronize their tlg.ini counterparts."""
+    normalized = normalize_settings(settings)
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                mode='w', encoding='utf-8', dir=path.parent,
+                prefix=path.name + '.', suffix='.tmp', delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(normalized, stream, indent=2, ensure_ascii=False)
+            stream.write('\n')
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    sync_settings_to_ini(normalized)
+    return normalized
 
 
 def check_game(game_dir):
-    """Problems that keep the game from starting, as (key, detail) pairs; empty means ready."""
-    game = Path(game_dir)
+    """Return startup blockers as (translation_key, detail) pairs; an empty list means ready."""
+    game = Path(game_dir or '')
     problems = []
     if not (game / 'eboot.bin').is_file():
         problems.append(('missing', 'eboot.bin'))
@@ -197,22 +417,18 @@ def check_game(game_dir):
     for archive in ('trico_boot.psarc', 'trico_001.psarc', 'trico_002.psarc', 'trico_003.psarc'):
         if not (game / archive).is_file():
             problems.append(('missing', archive))
+    if not NGS2_MODULE.is_file():
+        problems.append(('missing', 'out/libSceNgs2.bin'))
     if not PROBE.is_file():
         problems.append(('not_built', str(PROBE)))
     return problems
-
-
-def ngs2_module(settings):
-    path = Path(settings['system_lib_dir']) / 'libSceNgs2.sprx'
-    return path if settings.get('native_audio', True) and path.is_file() else None
-
 
 def read_ini(path):
     """The key=value pairs of tlg.ini (empty when the file does not exist yet)."""
     values = {}
     try:
         for line in path.read_text(encoding='utf-8').splitlines():
-            if '=' in line and not line.lstrip().startswith('#'):
+            if '=' in line and not line.lstrip().startswith(('#', ';')):
                 key, value = line.split('=', 1)
                 values[key.strip()] = value.strip()
     except OSError:
@@ -220,18 +436,75 @@ def read_ini(path):
     return values
 
 
-def update_ini(path, values):
-    """Sets keys in tlg.ini (the in-game menu's file), keeping every other line."""
-    lines = path.read_text(encoding='utf-8').splitlines() if path.is_file() else ['# tlg settings']
-    seen = set()
-    for i, line in enumerate(lines):
-        key = line.split('=', 1)[0].strip()
-        if key in values:
-            lines[i] = f'{key}={values[key]}'
-            seen.add(key)
-    lines += [f'{k}={v}' for k, v in values.items() if k not in seen]
-    path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+def _atomic_write_text(path, content):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                mode='w', encoding='utf-8', dir=path.parent,
+                prefix=path.name + '.', suffix='.tmp', delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(content)
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
+
+def update_ini(path, values):
+    """Update selected tlg.ini keys, preserving comments and unrelated settings."""
+    path = Path(path)
+    try:
+        lines = path.read_text(encoding='utf-8').splitlines()
+    except OSError:
+        lines = ['# tlg settings']
+
+    output = []
+    written = set()
+    for line in lines:
+        stripped = line.lstrip()
+        if not stripped or stripped.startswith(('#', ';')) or '=' not in line:
+            output.append(line)
+            continue
+        key = line.split('=', 1)[0].strip()
+        if key not in values:
+            output.append(line)
+        elif key not in written:
+            output.append(f'{key}={values[key]}')
+            written.add(key)
+
+    output.extend(f'{key}={value}' for key, value in values.items() if key not in written)
+    _atomic_write_text(path, '\n'.join(output) + '\n')
+
+
+def sync_settings_to_ini(settings):
+    """Persist launcher-owned live controls in the same file used by the in-game menu."""
+    settings = normalize_settings(settings)
+    update_ini(USER_DIR / 'tlg.ini', {
+        'display_mode': settings['display_mode'].lower(),
+        'vsync': int(settings['vsync']),
+        'show_fps': int(settings['show_fps']),
+        'keep_gpu_textures': int(settings['keep_gpu_textures']),
+        'mouse_enabled': int(settings['mouse_enabled']),
+        'mouse_sensitivity': f"{settings['mouse_sensitivity']:.2f}",
+        'mouse_invert_y': int(settings['mouse_invert_y']),
+        'key_map': key_map_spec(settings['key_map']),
+    })
+
+
+def reset_advanced_settings(settings):
+    """Reset every Advanced-dialog option, including its tlg.ini-backed GPU settings."""
+    reset = dict(settings)
+    reset.pop('gpu_readbacks', None)
+    reset.pop('draw_pipe', None)
+    reset.pop('keep_gpu_textures', None)
+    for key, _env_key, _default in READBACK_FLAGS:
+        reset.pop(key, None)
+    normalized = normalize_settings(reset)
+    save_settings(normalized)
+    update_ini(USER_DIR / 'tlg.ini', {'readback_batch': '0'})
+    return normalized
 
 # The serial the GPU backend names this game's shader cache after (another region's copy: its
 # param.sfo TITLE_ID, read from the game folder).
@@ -323,10 +596,7 @@ def prepare(settings, log=print):
     applied_garlic_extra = 0
     game = settings['game_dir']
     scripts = PORT_DIR / 'scripts'
-    modules = ['libc.prx', 'libSceFios2.prx']
-    ngs2 = ngs2_module(settings)
-    if ngs2:
-        modules.append(str(ngs2))
+    modules = ['libc.prx', 'libSceFios2.prx', str(NGS2_MODULE)]
     steps = [
         [*python_command(scripts / 'prepare.py'), game, '--out', str(OUT_DIR)],
         [*python_command(scripts / 'link_modules.py'), game, '--out', str(OUT_DIR), '--modules', *modules],
@@ -446,12 +716,20 @@ def build_env(settings, extra=None):
         if setting_key in settings and bool(settings[setting_key]) != default and env_key not in os.environ:
             env[env_key] = '1' if settings[setting_key] else '0'
     env['TLG_GC_BUDGET_MB'] = os.environ.get('TLG_GC_BUDGET_MB', str(int(settings['vram_budget_mb'])))
+    env['TLG_KEEP_GPU_TEXTURES'] = os.environ.get('TLG_KEEP_GPU_TEXTURES', '1' if settings.get('keep_gpu_textures', True) else '0')
+    stick_keys = dict(DEFAULT_STICK_KEYS)
+    configured_stick_keys = settings.get('stick_keys')
+    if isinstance(configured_stick_keys, dict):
+        stick_keys.update({key: value for key, value in configured_stick_keys.items()
+                           if key in DEFAULT_STICK_KEYS and isinstance(value, str) and value.strip()})
+    for action, key in stick_keys.items():
+        env.setdefault(f'TLG_{action.upper()}', key)
     env['TLG_LANGUAGE'] = os.environ.get('TLG_LANGUAGE', str(
         game_languages(settings.get('game_dir')).get(settings['game_language'], 1)))
-    if settings.get('ui_language', 'auto') != 'auto':
+    # The in-game overlay currently supports only Portuguese and English. A Russian
+    # launcher must not pass ru_RU here: the runtime treats every non-English value as Portuguese.
+    if settings.get('ui_language') in ('pt_BR', 'en_US'):
         env['TLG_UI_LANG'] = settings['ui_language']
-    # Without the console module the port's own mixer (runtime_ngs2.c) plays the audio.
-    env['TLG_NGS2'] = 'native' if ngs2_module(settings) else 'hle'
     env['TLG_CONFIG'] = str(USER_DIR / 'tlg.ini')
     # Window name and app id (matches tlg-pc.desktop for Alt+Tab and the dock) and icon.
     env.setdefault('TLG_APP_NAME', 'The Last Guardian')
@@ -510,15 +788,8 @@ def launch(settings, seconds=0, extra_env=None):
     """Writes the in-game settings, starts the game; returns (process, log path).
     The process's combined output is a text pipe; the caller copies it to the log."""
     USER_DIR.mkdir(parents=True, exist_ok=True)
-    update_ini(USER_DIR / 'tlg.ini', {
-        'display_mode': str(settings['display_mode']).lower(),  # the game's keys: windowed|borderless|fullscreen
-        'vsync': int(bool(settings['vsync'])),
-        'show_fps': int(bool(settings['show_fps'])),
-        'mouse_enabled': int(bool(settings.get('mouse_enabled', True))),
-        'mouse_sensitivity': f"{float(settings.get('mouse_sensitivity', 1.0)):.2f}",
-        'mouse_invert_y': int(bool(settings.get('mouse_invert_y', False))),
-        'key_map': key_map_spec(settings.get('key_map') or {}),
-    })
+    settings = normalize_settings(settings)
+    save_settings(settings)
     log = new_log()
     cmd = [str(PROBE), str(OUT_DIR / 'boot-linked.bin'), '--app0', settings['game_dir'],
            '--user', str(USER_DIR), '--content-profile', str(OUT_DIR / 'content.bin'),
@@ -544,8 +815,6 @@ def main(argv=None):
         for path, error in failures:
             print(f'Não apagado (em uso? feche o jogo): {path}: {error}', file=sys.stderr)
         return 1 if failures else 0
-    if os.environ.get('TLG_NGS2') == 'hle':
-        settings['native_audio'] = False
     problems = check_game(settings['game_dir'])
     if problems:
         for kind, detail in problems:

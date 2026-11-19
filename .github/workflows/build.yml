@@ -59,8 +59,10 @@ jobs:
       - name: Build
         run: TLG_LTO=OFF TLG_PGO=off bash build.sh
       - name: Package
+        if: hashFiles('port/out/libSceNgs2.bin') != ''
         run: bash packaging/linux/package.sh
       - uses: actions/upload-artifact@v4
+        if: hashFiles('port/out/libSceNgs2.bin') != ''
         with:
           name: tlg-linux-x86_64
           path: port/dist/tlg-linux-x86_64.tar.gz
@@ -102,6 +104,7 @@ jobs:
           export MSYS2_ROOT=$(cygpath -u "$MSYS2_ROOT")
           TLG_LTO=OFF bash build.sh
       - name: Package
+        if: hashFiles('port/out/libSceNgs2.bin') != ''
         env:
           MSYS2_ROOT: ${{ runner.temp }}/msys64
           WINPYTHON_WIN: ${{ steps.python.outputs.python-path }}
@@ -110,6 +113,7 @@ jobs:
           export WINPYTHON=$(cygpath -u "$WINPYTHON_WIN")
           bash packaging/windows/package.sh
       - uses: actions/upload-artifact@v4
+        if: hashFiles('port/out/libSceNgs2.bin') != ''
         with:
           name: tlg-windows-x86_64
           path: port/dist/tlg-windows-x86_64.zip
@@ -119,7 +123,7 @@ jobs:
   release:
     needs: [linux, windows]
     # Only pushes publish (main -> vYYYY.MM.DD-<commit>, v* tags -> that tag); pull requests stop at the artifacts.
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && hashFiles('port/out/libSceNgs2.bin') != ''
     runs-on: ubuntu-24.04
     permissions:
       contents: write

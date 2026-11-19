@@ -27,3 +27,7 @@ port/pgo/
 port/user
 /game
 port/dist/
+
+# The NGS2 runtime image is an intentional emulator dependency.
+!port/out/
+!port/out/libSceNgs2.bin

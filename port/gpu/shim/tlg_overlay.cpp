@@ -453,6 +453,17 @@ void PerformanceTab() {
                     "FPS onde o jogo tinha caído para 57 após 28 carregamentos, mas num teste mais longo o jogo "
                     "ainda ficou mais lento após muitos carregamentos (issue #20), então por enquanto vem desligado. "
                     "Desligado é o comportamento original do emulador."));
+        CheckRow(TL("Keep GPU-only textures", "Manter texturas só na GPU"), s.keep_gpu_textures,
+                 TL("Do not evict an image when its only valid contents are on the GPU. It is kept until video memory reaches the critical limit.",
+                    "Não descarta uma imagem quando seu único conteúdo válido está na GPU. Ela é mantida até a memória de vídeo atingir o limite crítico."));
+        CheckRow(TL("Debug: give back freed buffer memory", "Depuração: devolver memória de buffer liberada"),
+                 s.arena_release,
+                 TL("When the game unmaps memory, release its sparse GPU buffer backing too. Turn off only to compare with the old behaviour.",
+                    "Quando o jogo desmapeia memória, libere também o backing esparso do buffer da GPU. Desative apenas para comparar com o comportamento antigo."));
+        CheckRow(TL("Debug: texture cleanup follows driver budget", "Depuração: limpeza de textura segue o orçamento do driver"),
+                 s.gc_live_budget,
+                 TL("Use the driver's current memory budget, never below startup GC thresholds. Turn off to use startup limits only.",
+                    "Use o orçamento de memória atual do driver, nunca abaixo dos limites iniciais de GC. Desative para usar apenas os limites iniciais."));
         CheckRow(TL("Compile new shaders in the background", "Compilar shaders novos em segundo plano"), s.async_shaders,
                  TL("Fewer stutters in new areas; an object or effect may appear a moment later.", "Menos engasgos em áreas novas; um objeto ou efeito pode aparecer um instante depois."));
         ImGui::EndTable();

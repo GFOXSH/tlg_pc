@@ -3,6 +3,8 @@
 Estudo de viabilidade do port para PC. Endereços em espaço Ghidra (base 0x1000000).
 Legenda: **[C]** = confirmado no binário/dados, **[D]** = deduzido com boa confiança (decompilação + headers públicos/shadPS4), **[H]** = hipótese/palpite.
 
+> Estado atual: este estudo e o plano HLE abaixo são históricos. O runtime carrega `port/out/libSceNgs2.bin` como ELF64 `ET_SCE_DYN` pelo antigo linker de módulos; não há mixer HLE, arquivos `.a`/`.lib` ou carregamento de SPRX externo.
+
 ---
 
 ## 0. Resumo
@@ -187,7 +189,7 @@ Detalhes do AudioOut do gow3 que importam no TLG: o `GetPortState` devolve `chan
 
 ## 7. Plano para o port de áudio
 
-### Opção A: HLE do libSceNgs2 em software (recomendada se o runtime não tiver loader de .sprx)
+### Opção A (histórica): HLE do libSceNgs2 em software
 
 1. **AudioOut**: reaproveitar `runtime_audio.c` do gow3_pc com ajustes mínimos (stub do `SetMixLevelPadSpk`, `Output(NULL)` e a semântica do `GetPortState`). Para 7.1 nativo, usar SDL3 (já está lá) ou WASAPI. **0,5–1 dia.**
 2. **Audio3d**: stubs que retornam `SCE_AUDIO3D_ERROR_NOT_READY` (ou 0); a config nunca chama. **0,5 dia.**
@@ -201,7 +203,7 @@ Detalhes do AudioOut do gow3 que importam no TLG: o `GetPortState` devolve `chan
    - Para descobrir os layouts exatos dos param blocks: instrumentar `VoiceControl` (dump dos blocos) e usar os headers públicos do NGS2/shadPS4 `ngs2.h`.
    - Estimativa: **MVP audível** (sampler + mastering + submixer passthrough, PCM/VAG/AT9, sem FX) em **2–3 semanas**. **Paridade boa** (reverb, EQ, comp, upmix, chorus/delay, pitch exato, loops) em **+3–5 semanas**. Total **5–8 semanas/pessoa**.
 
-### Opção B: LLE do `libSceNgs2.sprx` original [H]
+### Opção B (histórica): LLE do `libSceNgs2.sprx` original [H]
 
 O NGS2 é código x86-64 da própria Sony. Se o runtime do port já tiver (ou ganhar) um loader de PRX/SPRX com resolução de NIDs, dá para carregar o `libSceNgs2.sprx` descriptografado do firmware do console do próprio usuário e implementar só as dependências dele (libkernel/libc e, provavelmente, **libSceAjm para ATRAC9**, que o gow3_pc já tem). O resultado seria fidelidade bit-exata, inclusive do reverb. Estimativa **1–2 semanas** se o loader existir, **3–4** se tiver que escrever. Riscos: dependências internas desconhecidas, como uso de ACP/Ajm quando `enableACP=0` (sem verificar), e a distribuição exige que o usuário forneça o firmware.
 

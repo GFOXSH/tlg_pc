@@ -122,6 +122,12 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.readback_batch = TlgGraphics::ParseReadbackBatch(value.empty() ? 0 : i);
     } else if (key == "texture_cleanup") {
         v.texture_cleanup = value.empty() || i != 0;
+    } else if (key == "keep_gpu_textures") {
+        v.keep_gpu_textures = value.empty() || i != 0;
+    } else if (key == "arena_release") {
+        v.arena_release = value.empty() || i != 0;
+    } else if (key == "gc_live_budget") {
+        v.gc_live_budget = value.empty() || i != 0;
     } else if (key == "render_resolution") {
         v.render_resolution = TlgGraphics::ParseResolution(value);
     } else if (key == "engine_fps") {
@@ -182,6 +188,9 @@ bool ReadFile(Values& v) {
         }
         Set(v, text.substr(0, eq), text.substr(eq + 1));
     }
+    if (const char* keep = std::getenv("TLG_KEEP_GPU_TEXTURES")) {
+        v.keep_gpu_textures = keep[0] != '0';
+    }
     std::fclose(file);
     return true;
 }
@@ -220,6 +229,8 @@ void Load() {
         {"TLG_MOUSE_ACCEL", "mouse_accel"},          {"TLG_MOUSE_DEADZONE", "mouse_deadzone"},
         {"TLG_SMAA", "smaa"},
         {"TLG_CAS", "cas"},                          {"TLG_COLOR_ADJUST", "color_adjust"},
+        {"TLG_KEEP_GPU_TEXTURES", "keep_gpu_textures"},
+        {"TLG_ARENA_RELEASE", "arena_release"},       {"TLG_GC_LIVE_BUDGET", "gc_live_budget"},
     };
     for (const auto& [env, key] : env_keys) {
         if (const char* value = std::getenv(env); value && value[0]) {
@@ -333,6 +344,9 @@ void Save() {
                  int(v.texture_cleanup.load()), TlgGraphics::Resolutions[std::clamp(v.render_resolution.load(), 0, 5)].data(),
                  v.engine_fps.load(), int(v.deferred_readback.load()), int(v.stale_readback.load()),
                  int(v.restart_unconfirmed.load()));
+    std::fprintf(file, "keep_gpu_textures=%d\n", int(v.keep_gpu_textures.load()));
+    std::fprintf(file, "arena_release=%d\ngc_live_budget=%d\n",
+                 int(v.arena_release.load()), int(v.gc_live_budget.load()));
     std::fprintf(file,
                  "mouse_enabled=%d\nmouse_sensitivity=%.2f\nmouse_invert_y=%d\nmouse_smoothing=%.2f\n"
                  "mouse_accel=%.2f\nmouse_deadzone=%.2f\nkey_map=%s\n",

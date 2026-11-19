@@ -7,6 +7,9 @@
 
 #include <chrono>
 #include <deque>
+#include <optional>
+#include <span>
+#include <unordered_map>
 #include <boost/container/small_vector.hpp>
 
 #include "common/interval_set.h"
@@ -15,6 +18,7 @@
 #include "video_core/buffer_cache/fault_manager.h"
 #include "video_core/buffer_cache/range_set.h"
 #include "video_core/renderer_vulkan/vk_semaphore.h"
+#include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
 
 namespace AmdGpu {
 struct Liverpool;
@@ -83,6 +87,7 @@ public:
 
     /// Invalidates any buffer in the logical page range.
     void InvalidateMemory(VAddr device_addr, u64 size, bool assume_locks = false);
+    void DiscardForOverwrite(VAddr device_addr, u64 size);
 
     /// tlg: a guest write fault at `device_addr` was handled; unprotect its neighbourhood.
     void ExtendWriteFault(VAddr device_addr);
@@ -120,6 +125,10 @@ public:
 
     /// Commits pending sparse buffer memory binds. Must be called before every scheduler submit.
     void SubmitPendingArenaBinds(Vulkan::SubmitInfo& info);
+
+    /// tlg (issue #38): releases the arena memory backing a range the guest unmapped. From the
+    /// SotC port (@AjncSystem, @Oussama268, thanks). GPU thread only.
+    void ReleaseMemory(VAddr device_addr, u64 size);
 
 private:
     struct ArenaBinds {
@@ -285,6 +294,19 @@ private:
         }
     };
     IntervalList<Backing> resident_ranges;
+
+    // tlg (issue #38): arena memory release on guest unmap, from the SotC port.
+    /// Number of resident blocks still bound to each backing allocation, and its size.
+    std::unordered_map<VkDeviceMemory, u64> backing_blocks;
+    std::unordered_map<VkDeviceMemory, u64> backing_bytes;
+    std::chrono::steady_clock::time_point next_release_report{};
+    /// Unbinds resident block ranges (zeroing their page table entries) and frees the
+    /// allocations left without blocks. The GPU must no longer use them.
+    void UnbindResident(std::span<const Backing> released);
+    /// Logs a rate-limited summary of released arena memory.
+    void ReportArenaRelease();
+    /// tlg: system-memory type for arena blocks when video memory is full (@AjncSystem).
+    std::optional<u32> arena_fallback_memory_type_index;
 
     u32 arena_memory_type_index{};
     u32 block_size{};

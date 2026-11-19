@@ -1,7 +1,7 @@
 /* System-library functions first needed by The Last Guardian (CUSA03627 v1.03).
  *
  * Event flags are a complete implementation. Audio3d is a placeholder (the game's sndx does not
- * load it); NGS2 is runtime_ngs2.c. Everything else is a small contract
+ * load it); NGS2 is loaded as a native ELF module by link_modules.py. Everything else is a small contract
  * the game needs at boot: kernel queries, time-zone conversion, PlayGo dialog, LoadExec.
  */
 #define _GNU_SOURCE
@@ -229,7 +229,7 @@ static ABI int32_t libc_heap_trace_info(HeapTraceInfo *info) {
     return 0;
 }
 
-/* Needed by libSceNgs2.sprx (console firmware module, TLG_NGS2=native). */
+/* Imports used by the bundled libSceNgs2 V5 image. */
 static ABI int32_t compiled_sdk_version(int32_t *version) {
     if (!version) return KERR_EINVAL;
     *version = 0x04008061; /* the SDK the game's own modules report (FIOS2 log) */

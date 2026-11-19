@@ -6,6 +6,8 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+// spartanport: declare the exception type caught during speculative specialization.
+#include <exception>
 #include <mutex>
 #include <ranges>
 #include <string>
@@ -31,6 +33,7 @@
 #include "video_core/renderer_vulkan/vk_draw_prep.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_serialization.h"
+#include "video_core/renderer_vulkan/shader_recipe.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 
@@ -45,6 +48,7 @@ struct AsyncShaderCompilation {
     Shader::Info info;
     Shader::RuntimeInfo runtime{};
     std::vector<u32> code, user_data, geometry_code, binary;
+    std::vector<u8> recipe; // tlg: shader_recipe.h
     std::unique_ptr<Shader::Pools> pools;
     CompilerPool<Shader::Pools>* pool_cache{};
     std::optional<Shader::IR::Program> ir;
@@ -505,10 +509,13 @@ bool PipelineCache::QueueShader(Program& program, HwStage stage, SwStage l_stage
         // (InjectClipDistanceAttributes adds a fragment input), and a key made after that never
         // matches again, so every draw queued a new permutation (inFAMOUS: 32768 of one shader).
         const Shader::RuntimeInfo lookup_runtime = build->runtime;
+        ShaderRecipe::Begin();
         build->ir.emplace(Shader::TranslateProgram(build->code, *build->pools, build->info,
                                                    build->runtime, profile));
         build->spec = Shader::StageSpecialization(build->info, lookup_runtime, profile, binding);
         build->fetch.Capture(build->info);
+        build->recipe =
+            ShaderRecipe::Take(build->info, build->code, lookup_runtime, binding, build->permutation);
     };
     // tlg: the capture worker reads guest memory (fetch shader, resource descriptors). A page
     // the GPU wrote is protected under precise readbacks, and its readback needs this (the GPU
@@ -608,6 +615,7 @@ void PipelineCache::PublishShaders(bool wait) {
         Vulkan::SetObjectName(instance.GetDevice(), build->module,
                              GetShaderName(build->info.hw_stage, hash, build->permutation));
         RegisterShaderBinary(std::move(build->binary), hash, build->permutation);
+        ShaderRecipe::Save(hash, build->permutation, std::move(build->recipe));
         {
             std::unique_lock lock{programs_mutex};
             if (build->initial) {
@@ -644,6 +652,12 @@ void PipelineCache::PublishGraphics(bool wait) {
             continue;
         }
         const auto key = it.key();
+        // spartanport: keep a null refusal marker; do not publish stages or save a failed key.
+        if (!build->pipeline || !build->pipeline->IsValid()) {
+            graphics_pipelines.try_emplace(key);
+            it = pending_graphics.erase(it);
+            continue;
+        }
         build->pipeline->PublishStages(build->live_infos);
         RegisterPipelineData(key, std::hash<GraphicsPipelineKey>{}(key), build->data);
         graphics_pipelines.emplace(key, std::move(build->pipeline));
@@ -733,7 +747,9 @@ const GraphicsPipeline* PipelineCache::TryPreparedPipeline(const PreparedDraw& p
         }
     }
     const auto it = graphics_pipelines.find(prepared.key);
-    return it != graphics_pipelines.end() ? it->second.get() : nullptr;
+    // spartanport: prepared draws must skip refused pipelines on every lookup.
+    return it != graphics_pipelines.end() && it->second && it->second->IsValid() ? it->second.get()
+                                                                                 : nullptr;
 }
 
 const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectParams params,
@@ -759,7 +775,8 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
     if (AsyncCompilation() && !sel.regs->stage_enable.hs_en && !EmulatorSettings.IsShaderCollect()) {
         const auto found = graphics_pipelines.find(sel.graphics_key);
         if (found != graphics_pipelines.end()) {
-            return found->second.get();
+            // spartanport: a refused async build stays empty so later draws also skip it.
+            return found->second && found->second->IsValid() ? found->second.get() : nullptr;
         }
         if (!pending_graphics.contains(sel.graphics_key) && compiler->HasCapacity()) {
             PhaseTimer capture{g_tlg_snapshot_ns};
@@ -805,6 +822,13 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
             instance, scheduler, desc_heap, profile, sel.graphics_key, *pipeline_cache, sel.infos,
             sel.runtime_infos, sel.fetch_shader, sel.modules, sdata, false);
 
+        // spartanport: remember the refusal without retrying every draw or persisting its key.
+        if (!it.value()->IsValid()) {
+            it.value().reset();
+            sel.fetch_shader.reset();
+            return nullptr;
+        }
+
         RegisterPipelineData(sel.graphics_key, pipeline_hash, sdata);
         ++num_new_pipelines;
 
@@ -818,7 +842,8 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         }
         sel.fetch_shader.reset();
     }
-    return it->second.get();
+    // spartanport: skip cached refusals on every synchronous lookup too.
+    return it->second && it->second->IsValid() ? it->second.get() : nullptr;
 }
 
 const ComputePipeline* PipelineCache::GetComputePipeline() {
@@ -838,6 +863,11 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
         it.value() = std::make_unique<ComputePipeline>(instance, scheduler, desc_heap, profile,
                                                        *pipeline_cache, compute_key, *sel.infos[0],
                                                        sel.modules[0], sdata, false);
+        // spartanport: a null marker skips repeated dispatches and never saves a refused key.
+        if (!it.value()->IsValid()) {
+            it.value().reset();
+            return nullptr;
+        }
         RegisterPipelineData(compute_key, sdata);
         ++num_new_pipelines;
 
@@ -846,7 +876,8 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
             module_related_pipelines[m].emplace_back(compute_key);
         }
     }
-    return it->second.get();
+    // spartanport: a cached empty handle is not a dispatchable pipeline.
+    return it->second && it->second->IsValid() ? it->second.get() : nullptr;
 }
 
 bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
@@ -1144,6 +1175,19 @@ bool PipelineCache::RefreshGraphicsStages(PipelineSelection& sel) {
     }
 
     const auto* vs_info = sel.infos[static_cast<u32>(SwStage::Vertex)];
+    // spartanport: a draw with no vertex table has no input to build; skip before format lookup.
+    if (vs_info && sel.fetch_shader) {
+        for (const auto& attrib : sel.fetch_shader->attributes) {
+            if (vs_info->UdPointerNull(attrib.sgpr_base)) {
+                static std::atomic<u32> reported{0};
+                if (!sel.worker && reported.fetch_add(1, std::memory_order_relaxed) < 5) {
+                    LOG_WARNING(Render_Vulkan,
+                                "Draw skipped: its vertex buffer table pointer is null or short");
+                }
+                return false;
+            }
+        }
+    }
     if (vs_info && sel.fetch_shader && !instance.IsVertexInputDynamicState()) {
         // Without vertex input dynamic state, the pipeline needs to specialize on format.
         // Stride will still be handled outside the pipeline using dynamic state.
@@ -1178,7 +1222,12 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
     DumpShader(code, info.pgm_hash, info.hw_stage, perm_idx, "bin");
     CompileTimer timer;
 
+    const auto lookup_runtime = runtime_info;
+    const auto start = binding;
+    ShaderRecipe::Begin();
     const auto ir_program = Shader::TranslateProgram(code, pools, info, runtime_info, profile);
+    ShaderRecipe::Save(info.pgm_hash, perm_idx,
+                       ShaderRecipe::Take(info, code, lookup_runtime, start, perm_idx));
     auto spv = Shader::Backend::SPIRV::EmitSPIRV(profile, runtime_info, ir_program, binding);
     DumpShader(spv, info.pgm_hash, info.hw_stage, perm_idx, "spv");
 
@@ -1296,10 +1345,24 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
             return {};
         }
         runtime_fault_recover = &recover;
-        info.RefreshFlatBuf();
-        auto spec = Shader::StageSpecialization(info, runtime_info, profile, binding);
+        // spartanport: torn guest data can throw; abandon preparation like a fault, without
+        // changing the non-unwinding fault jump out of this try block.
+        std::optional<Shader::StageSpecialization> spec;
+        try {
+            info.RefreshFlatBuf();
+            spec.emplace(info, runtime_info, profile, binding);
+        } catch (const std::exception& e) {
+            runtime_fault_recover = outer_recover;
+            static std::atomic<u32> logged{0};
+            if (logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+                LOG_WARNING(Render_Vulkan, "Draw preparation ahead of the GPU thread stopped: {}",
+                            e.what());
+            }
+            worker.failed = true;
+            return {};
+        }
         runtime_fault_recover = outer_recover;
-        const auto it = std::ranges::find(program->modules, spec, &Program::Module::spec);
+        const auto it = std::ranges::find(program->modules, *spec, &Program::Module::spec);
         if (it == program->modules.end()) {
             worker.failed = true;
             return {};
